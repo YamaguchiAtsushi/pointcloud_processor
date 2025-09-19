@@ -1,0 +1,15 @@
+<launch>
+  <!-- base_link → velodyne_link のみ静的変換 -->
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="static_tf_velodyne_to_base_zx120" output="screen"
+        args="0.55 0.4 3.5 0.0 0.4363 0.0 zx120/base_link zx120/velodyne_link">
+        <!-- args="0.55 0.4 2.0 0.0 0.4363 0.0 zx120/base_link zx120/velodyne_link"> -->
+      <param name="use_sim_time" value="false"/>
+  </node>
+
+  <!-- base_link → gnss_link のみ静的変換 -->
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="static_tf_gnss_to_base_zx120" output="screen"
+        args="2.0 0.0 3.8 0.0 0.0 0.0 zx120/base_link zx120/gnss_link">
+        <!-- args="1.2 0.0 2.3 0.0 0.0 0.0 zx120/base_link zx120/gnss_link"> -->
+      <param name="use_sim_time" value="false"/>
+  </node>
+</launch>

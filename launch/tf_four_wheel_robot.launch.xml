@@ -1,0 +1,14 @@
+<launch>
+  <!-- base_link → velodyne_link -->
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="static_tf_velodyne_to_base_four_wheel_robot" output="screen"
+        args="0.25 0.0 2.0 0.0 0.1245 0.0 four_wheel_robot/base_link four_wheel_robot/velodyne_link">
+        <!-- args="0.45 0.0 1.5 0.0 0.1745 0.0 four_wheel_robot/base_link four_wheel_robot/velodyne_link"> -->
+      <param name="use_sim_time" value="false"/>
+  </node>
+
+  <!-- base_link → gnss_link -->
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="static_tf_gnss_to_base_four_wheel_robot" output="screen"
+        args="0.5 0.0 0.0 0.0 0.0 0.0 four_wheel_robot/base_link four_wheel_robot/gnss_link">
+      <param name="use_sim_time" value="false"/>
+  </node>
+</launch>

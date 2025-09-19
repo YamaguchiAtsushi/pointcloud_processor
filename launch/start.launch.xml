@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Simple launch file without problematic constructs -->
+  
+  <!-- Launch calc_heading node -->
+  <node pkg="pointcloud_processor" exec="calc_heading" name="calc_heading" output="screen">
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <!-- Launch pointcloud_filter node -->
+  <node pkg="pointcloud_processor" exec="pointcloud_filter" name="pointcloud_filter" output="screen">
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <!-- Launch pointcloud_merger node -->
+  <node pkg="pointcloud_processor" exec="pointcloud_merger" name="pointcloud_merger" output="screen">
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <node pkg="pointcloud_processor" exec="excavated_surface_generator" name="excavated_surface_generator" output="screen">
+    <param name="use_sim_time" value="false"/>
+  </node>
+
+  <!-- <node pkg="pointcloud_processor" exec="virtual_lidar" name="virtual_lidar" output="screen">
+    <param name="use_sim_time" value="false"/>
+  </node> -->
+
+  <!-- Include TF launches -->
+  <include file="$(find-pkg-share pointcloud_processor)/launch/tf_zx120.launch.xml"/>
+  <include file="$(find-pkg-share pointcloud_processor)/launch/tf_four_wheel_robot.launch.xml"/>
+
+  <!-- Launch rviz2 -->
+  <node pkg="rviz2" exec="rviz2" name="rviz2" output="screen">
+    <param name="use_sim_time" value="false"/>
+  </node>
+</launch>
