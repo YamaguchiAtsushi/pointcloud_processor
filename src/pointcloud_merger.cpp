@@ -77,7 +77,7 @@ private:
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     
     // Geographic conversion
-    GeographicLib::LocalCartesian local_cartesian_;
+    GeographicLib::LocalCartesian local_cartesian_;//GNSSを局所直交座標系（ENU座標系） に変換するためのクラス
     bool origin_set_;
     
     // Subscribers
@@ -148,6 +148,8 @@ private:
         
         // Set origin at zx120 position if not already set
         if (!origin_set_ && msg->status.status >= 0) {
+            //zx120のGNSS位置を原点(0,0,0)に設定
+            //Resetは一度だけ実行される
             local_cartesian_.Reset(msg->latitude, msg->longitude, msg->altitude);
             origin_set_ = true;
             RCLCPP_INFO(this->get_logger(), 
@@ -233,6 +235,7 @@ private:
             // four_wheel_robotのGNSS位置を取得
             double robot_x, robot_y, robot_z;
             // GNSSから位置をENUに変換
+            // zx120を原点(0,0,0)からの相対位置として計算
             local_cartesian_.Forward(gnss_msg->latitude, gnss_msg->longitude, 
                                      gnss_msg->altitude, robot_x, robot_y, robot_z);
             

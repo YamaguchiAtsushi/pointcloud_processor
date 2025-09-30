@@ -11,36 +11,23 @@
 #include <pcl/point_types.h>
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/features/normal_3d.h>
-#include <pcl/surface/gp3.h>
 #include <cmath>
 #include <algorithm>
 #include <vector>
 #include <numeric>
 #include <random>
-#include <unordered_map>
 
 struct GridCell {
     double x, y, z;
-    double weight;
     bool is_valid;
-    double coverage_score;
-    double redundancy_score;
-    double angle_score;
-    double distance_score;
-    double slope_score;
-    double total_score;
-    
+    double score_zx120;
+    double score_mobile;
+    double combined_score;
     pcl::Normal surface_normal;
-    double slope_angle;
-    double slope_direction;
-    double surface_roughness;
-    bool is_steep_slope;
     
     GridCell(double x=0, double y=0, double z=0) 
-        : x(x), y(y), z(z), weight(1.0), is_valid(true), 
-          coverage_score(0.0), redundancy_score(0.0), 
-          angle_score(0.0), distance_score(0.0), slope_score(0.0), total_score(0.0),
-          slope_angle(0.0), slope_direction(0.0), surface_roughness(0.0), is_steep_slope(false) {
+        : x(x), y(y), z(z), is_valid(true), 
+          score_zx120(0.0), score_mobile(0.0), combined_score(0.0) {
         surface_normal.normal_x = 0.0;
         surface_normal.normal_y = 0.0;
         surface_normal.normal_z = 1.0;
@@ -48,66 +35,42 @@ struct GridCell {
 };
 
 struct LidarPosition {
-    double x, y, z;
-    double pitch, yaw;
-    double total_score;
+    double x, y, z, pitch, yaw, total_score;
     
     LidarPosition(double x=0, double y=0, double z=10, double pitch=-M_PI/2, double yaw=0) 
         : x(x), y(y), z(z), pitch(pitch), yaw(yaw), total_score(0.0) {}
 };
 
-struct DualLidarEvaluation {
-    double coverage_score;
-    double redundancy_score;
-    double complementary_score;
-    double slope_adaptation_score;
-    double weighted_total_score;
+struct SimplifiedEvaluation {
+    double total_score;
+    double coverage_ratio;
     int covered_cells;
-    int redundant_cells;
     int total_cells;
-    int steep_slope_cells;
-    int well_covered_steep_cells;
 };
 
-struct OptimizationParams {
-    double distance_weight = 2.0;
-    double angle_weight = 1.5;
-    double visibility_weight = 4.0;
-    double coverage_weight = 5.0;
-    double redundancy_weight = 1.5;
-    double complementary_weight = 6.0;
-    double slope_adaptation_weight = 4.0;
-    double min_distance = 1.0;
-    double max_distance = 15.0;
-    double optimal_angle = 60 * M_PI / 180.0;
-    
-    double grid_resolution = 0.3;
-    double cell_weight_distance_threshold = 3.0;
-    
-    double steep_slope_threshold = 45.0 * M_PI / 180.0;
-    double optimal_incidence_angle = 60.0 * M_PI / 180.0;
-    double min_incidence_angle = 15.0 * M_PI / 180.0;
-    double max_incidence_angle = 75.0 * M_PI / 180.0;
-    double surface_normal_search_radius = 1.5;
-    double slope_weight_multiplier = 3.0;
-};
-
-class GridBasedDualLidarOptimizer : public rclcpp::Node {
+class SimplifiedDualLidarOptimizer : public rclcpp::Node {
 public:
-    GridBasedDualLidarOptimizer() : Node("grid_based_dual_lidar_optimizer") {
+    SimplifiedDualLidarOptimizer() : Node("simplified_dual_lidar_optimizer") {
         tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
         
-        declareParameters();
+        // 簡素化されたパラメータの宣言
+        this->declare_parameter("grid_resolution", 0.1);
+        this->declare_parameter("sensor_height", 1.1);
+        this->declare_parameter("search_radius", 3.0);
+        this->declare_parameter("max_distance", 15.0);
+        this->declare_parameter("num_candidates", 196);
+        
+        // パラメータ読み込み
         updateParameters();
         
         excavation_area_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
             "/excavation_area", 10,
-            std::bind(&GridBasedDualLidarOptimizer::excavationAreaCallback, this, std::placeholders::_1));
+            std::bind(&SimplifiedDualLidarOptimizer::excavationAreaCallback, this, std::placeholders::_1));
             
         terrain_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
             "/excavated_terrain", 10,
-            std::bind(&GridBasedDualLidarOptimizer::terrainCallback, this, std::placeholders::_1));
+            std::bind(&SimplifiedDualLidarOptimizer::terrainCallback, this, std::placeholders::_1));
         
         optimal_position_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
             "/optimal_mobile_lidar_position", 10);
@@ -118,12 +81,38 @@ public:
         
         optimization_timer_ = this->create_wall_timer(
             std::chrono::seconds(3),
-            std::bind(&GridBasedDualLidarOptimizer::runOptimization, this));
+            std::bind(&SimplifiedDualLidarOptimizer::runOptimization, this));
             
-        rng_.seed(std::chrono::system_clock::now().time_since_epoch().count());
+        rng_.seed(std::chrono::system_clock::now().time_since_epoch().count());//いらないかも
     }
     
 private:
+    // 簡素化されたパラメータ（固定値）
+    static constexpr double ALPHA = 1.0;          // 角度重み
+    static constexpr double BETA = 10.0;          // 距離重み
+    static constexpr double MIN_DISTANCE = 1.0;   // 最小距離
+    static constexpr double ZX120_OFFSET_X = 0.4; // ZX120オフセット
+    static constexpr double ZX120_OFFSET_Y = 0.5;
+    static constexpr double ZX120_OFFSET_Z = 3.5;
+    static constexpr double ZX120_PITCH = -M_PI/6;
+    static constexpr double ZX120_YAW = 0.0;
+    static constexpr double FOV_HORIZONTAL = 120.0 * M_PI / 180.0;
+    static constexpr double FOV_VERTICAL = 90.0 * M_PI / 180.0;
+    static constexpr double NORMAL_SEARCH_RADIUS = 1.5;
+    static constexpr double RAY_STEP_SIZE = 0.1;
+    static constexpr double VISIBILITY_RADIUS = 0.5;
+    // static constexpr double MIN_ELEVATION = -60.0 * M_PI / 180.0;
+    // static constexpr double MAX_ELEVATION = 45.0 * M_PI / 180.0;
+    static constexpr double MIN_ELEVATION = -80.0 * M_PI / 180.0;
+    static constexpr double MAX_ELEVATION = 85.0 * M_PI / 180.0;
+    
+    // 設定可能パラメータ（最小限）
+    double grid_resolution_;
+    double sensor_height_;
+    double search_radius_;
+    double max_distance_;
+    int num_candidates_;
+    
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
     
@@ -138,163 +127,79 @@ private:
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr excavation_area_;
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr terrain_cloud_;
     pcl::KdTreeFLANN<pcl::PointXYZRGB>::Ptr terrain_kdtree_;
-    pcl::KdTreeFLANN<pcl::PointXYZRGB>::Ptr excavation_kdtree_;  // 追加
-    pcl::PointCloud<pcl::Normal>::Ptr terrain_normals_;
+    pcl::KdTreeFLANN<pcl::PointXYZRGB>::Ptr excavation_kdtree_;
+    pcl::PointCloud<pcl::Normal>::Ptr terrain_normals_;//法線格納用
     
     std::vector<std::vector<GridCell>> excavation_grid_;
     double grid_min_x_, grid_max_x_, grid_min_y_, grid_max_y_;
-    double excavation_min_z_, excavation_max_z_;  // 追加
+    double excavation_min_z_, excavation_max_z_;
     int grid_width_, grid_height_;
     
-    int num_candidates_;
-    int max_iterations_;
-    double search_radius_;
-    double sensor_height_;
-    double min_elevation_angle_;
-    double max_elevation_angle_;
-    OptimizationParams opt_params_;
-    bool optimization_enabled_;
-    
-    double zx120_offset_x_, zx120_offset_y_, zx120_offset_z_;
-    double zx120_pitch_, zx120_yaw_;
-    
-    double fov_horizontal_, fov_vertical_;
-    double max_range_, angular_resolution_;
-    double ray_step_size_, lidar_search_radius_;
-    
-    std::mt19937 rng_;
+    std::mt19937 rng_;//いらないかも
     pcl::NormalEstimation<pcl::PointXYZRGB, pcl::Normal> normal_estimator_;
     
     LidarPosition best_mobile_position_;
     LidarPosition zx120_lidar_position_;
     std::vector<LidarPosition> candidate_positions_;
-    std::vector<DualLidarEvaluation> candidate_evaluations_;
-    
-    void declareParameters() {
-        this->declare_parameter("optimization.num_candidates", 100);
-        this->declare_parameter("optimization.max_iterations", 100);
-        this->declare_parameter("optimization.search_radius", 5.0);
-        this->declare_parameter("optimization.sensor_height", 1.0);
-        this->declare_parameter("optimization.min_elevation_angle", -45.0);
-        this->declare_parameter("optimization.max_elevation_angle", 30.0);
-        this->declare_parameter("optimization.distance_weight", 2.0);
-        this->declare_parameter("optimization.angle_weight", 2.0);
-        this->declare_parameter("optimization.visibility_weight", 4.0);
-        this->declare_parameter("optimization.coverage_weight", 5.0);
-        this->declare_parameter("optimization.redundancy_weight", 1.0);
-        this->declare_parameter("optimization.complementary_weight", 4.0);
-        this->declare_parameter("optimization.slope_adaptation_weight", 4.0);
-        this->declare_parameter("optimization.enabled", true);
-        this->declare_parameter("optimization.grid_resolution", 0.3);
-        
-        this->declare_parameter("slope.steep_threshold_degrees", 20.0);
-        this->declare_parameter("slope.optimal_incidence_degrees", 60.0);
-        this->declare_parameter("slope.min_incidence_degrees", 15.0);
-        this->declare_parameter("slope.max_incidence_degrees", 85.0);
-        this->declare_parameter("slope.weight_multiplier", 3.0);
-        this->declare_parameter("slope.normal_search_radius", 1.5);
-        
-        this->declare_parameter("zx120_lidar.offset_x", 0.4);
-        this->declare_parameter("zx120_lidar.offset_y", 0.5);
-        this->declare_parameter("zx120_lidar.offset_z", 3.5);
-        this->declare_parameter("zx120_lidar.pitch", -M_PI/6);
-        this->declare_parameter("zx120_lidar.yaw", 0.0);
-        
-        this->declare_parameter("lidar.fov_horizontal", 120.0);
-        this->declare_parameter("lidar.fov_vertical", 90.0);
-        this->declare_parameter("lidar.max_range", 50.0);
-        this->declare_parameter("lidar.angular_resolution", 1.0);
-        this->declare_parameter("lidar.ray_step_size", 0.1);
-        this->declare_parameter("lidar.search_radius", 0.5);
-    }
     
     void updateParameters() {
-        num_candidates_ = this->get_parameter("optimization.num_candidates").as_int();
-        max_iterations_ = this->get_parameter("optimization.max_iterations").as_int();
-        search_radius_ = this->get_parameter("optimization.search_radius").as_double();
-        sensor_height_ = this->get_parameter("optimization.sensor_height").as_double();
-        min_elevation_angle_ = this->get_parameter("optimization.min_elevation_angle").as_double() * M_PI / 180.0;
-        max_elevation_angle_ = this->get_parameter("optimization.max_elevation_angle").as_double() * M_PI / 180.0;
-        opt_params_.distance_weight = this->get_parameter("optimization.distance_weight").as_double();
-        opt_params_.angle_weight = this->get_parameter("optimization.angle_weight").as_double();
-        opt_params_.visibility_weight = this->get_parameter("optimization.visibility_weight").as_double();
-        opt_params_.coverage_weight = this->get_parameter("optimization.coverage_weight").as_double();
-        opt_params_.redundancy_weight = this->get_parameter("optimization.redundancy_weight").as_double();
-        opt_params_.complementary_weight = this->get_parameter("optimization.complementary_weight").as_double();
-        opt_params_.slope_adaptation_weight = this->get_parameter("optimization.slope_adaptation_weight").as_double();
-        opt_params_.grid_resolution = this->get_parameter("optimization.grid_resolution").as_double();
-        optimization_enabled_ = this->get_parameter("optimization.enabled").as_bool();
+        grid_resolution_ = this->get_parameter("grid_resolution").as_double();
+        sensor_height_ = this->get_parameter("sensor_height").as_double();
+        search_radius_ = this->get_parameter("search_radius").as_double();
+        max_distance_ = this->get_parameter("max_distance").as_double();
+        num_candidates_ = this->get_parameter("num_candidates").as_int();
         
-        opt_params_.steep_slope_threshold = this->get_parameter("slope.steep_threshold_degrees").as_double() * M_PI / 180.0;
-        opt_params_.optimal_incidence_angle = this->get_parameter("slope.optimal_incidence_degrees").as_double() * M_PI / 180.0;
-        opt_params_.min_incidence_angle = this->get_parameter("slope.min_incidence_degrees").as_double() * M_PI / 180.0;
-        opt_params_.max_incidence_angle = this->get_parameter("slope.max_incidence_degrees").as_double() * M_PI / 180.0;
-        opt_params_.slope_weight_multiplier = this->get_parameter("slope.weight_multiplier").as_double();
-        opt_params_.surface_normal_search_radius = this->get_parameter("slope.normal_search_radius").as_double();
-        
-        zx120_offset_x_ = this->get_parameter("zx120_lidar.offset_x").as_double();
-        zx120_offset_y_ = this->get_parameter("zx120_lidar.offset_y").as_double();
-        zx120_offset_z_ = this->get_parameter("zx120_lidar.offset_z").as_double();
-        zx120_pitch_ = this->get_parameter("zx120_lidar.pitch").as_double();
-        zx120_yaw_ = this->get_parameter("zx120_lidar.yaw").as_double();
-        
-        fov_horizontal_ = this->get_parameter("lidar.fov_horizontal").as_double() * M_PI / 180.0;
-        fov_vertical_ = this->get_parameter("lidar.fov_vertical").as_double() * M_PI / 180.0;
-        max_range_ = this->get_parameter("lidar.max_range").as_double();
-        angular_resolution_ = this->get_parameter("lidar.angular_resolution").as_double() * M_PI / 180.0;
-        ray_step_size_ = this->get_parameter("lidar.ray_step_size").as_double();
-        lidar_search_radius_ = this->get_parameter("lidar.search_radius").as_double();
+        // RCLCPP_INFO(this->get_logger(), "Parameters: grid_res=%.2f, height=%.1f, search_r=%.1f", 
+        //            grid_resolution_, sensor_height_, search_radius_);
     }
     
     void excavationAreaCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
         excavation_area_.reset(new pcl::PointCloud<pcl::PointXYZRGB>);
-        pcl::fromROSMsg(*msg, *excavation_area_);
+        pcl::fromROSMsg(*msg, *excavation_area_);//ROS to PCL
         
         if (excavation_area_->empty()) return;
         
-        // 掘削エリアのKDTreeを構築
         excavation_kdtree_.reset(new pcl::KdTreeFLANN<pcl::PointXYZRGB>);
         try {
             excavation_kdtree_->setInputCloud(excavation_area_);
-            RCLCPP_INFO(this->get_logger(), "Built excavation KD-tree with %zu points", excavation_area_->size());
+            computeTerrainNormals();//法線計算
+            generateExcavationGrid();//各セルの3D位置と法線の計算
         } catch (const std::exception& e) {
-            RCLCPP_ERROR(this->get_logger(), "Failed to build excavation KD-tree: %s", e.what());
-            return;
+            RCLCPP_ERROR(this->get_logger(), "Failed to process excavation area: %s", e.what());
         }
-        
-        computeTerrainNormals();
-        generateExcavationGrid();
     }
     
     void terrainCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
         terrain_cloud_.reset(new pcl::PointCloud<pcl::PointXYZRGB>);
-        pcl::fromROSMsg(*msg, *terrain_cloud_);
+        pcl::fromROSMsg(*msg, *terrain_cloud_);//ROS to PCL
         
-        if (terrain_cloud_->empty()) return;
-        
-        terrain_kdtree_.reset(new pcl::KdTreeFLANN<pcl::PointXYZRGB>);
-        try {
-            terrain_kdtree_->setInputCloud(terrain_cloud_);
-        } catch (const std::exception& e) {
-            RCLCPP_ERROR(this->get_logger(), "Failed to build terrain KD-tree: %s", e.what());
+        if (!terrain_cloud_->empty()) {
+            terrain_kdtree_.reset(new pcl::KdTreeFLANN<pcl::PointXYZRGB>);
+            try {
+                terrain_kdtree_->setInputCloud(terrain_cloud_);//PCLのメソッド
+            } catch (const std::exception& e) {
+                RCLCPP_ERROR(this->get_logger(), "Failed to build terrain KD-tree: %s", e.what());
+            }
         }
     }
     
-    void computeTerrainNormals() {
+    void computeTerrainNormals() {//各地点の表面の向きを計算
         if (!excavation_area_ || excavation_area_->empty()) return;
         
         try {
             pcl::search::KdTree<pcl::PointXYZRGB>::Ptr kdtree(new pcl::search::KdTree<pcl::PointXYZRGB>());
             kdtree->setInputCloud(excavation_area_);
             
-            normal_estimator_.setInputCloud(excavation_area_);
-            normal_estimator_.setSearchMethod(kdtree);
-            normal_estimator_.setKSearch(0);
-            normal_estimator_.setRadiusSearch(opt_params_.surface_normal_search_radius);
+            //法線推定器の設定
+            normal_estimator_.setInputCloud(excavation_area_);//法線計算のための点群をセット
+            normal_estimator_.setSearchMethod(kdtree);//探索方法をセット
+            normal_estimator_.setRadiusSearch(NORMAL_SEARCH_RADIUS);//半径探索の範囲をセット
             
-            terrain_normals_.reset(new pcl::PointCloud<pcl::Normal>);
-            normal_estimator_.compute(*terrain_normals_);
+            //法線計算の実行
+            terrain_normals_.reset(new pcl::PointCloud<pcl::Normal>);//法線を格納する点群を初期化
+            normal_estimator_.compute(*terrain_normals_);//法線計算を実行
             
+            // 法線を上向きに統一
             for (auto& normal : terrain_normals_->points) {
                 if (normal.normal_z < 0) {
                     normal.normal_x = -normal.normal_x;
@@ -302,10 +207,6 @@ private:
                     normal.normal_z = -normal.normal_z;
                 }
             }
-            
-            RCLCPP_INFO(this->get_logger(), "Computed normals for %zu points with search radius %.2f", 
-                       terrain_normals_->size(), opt_params_.surface_normal_search_radius);
-            
         } catch (const std::exception& e) {
             RCLCPP_ERROR(this->get_logger(), "Failed to compute terrain normals: %s", e.what());
             terrain_normals_.reset(new pcl::PointCloud<pcl::Normal>);
@@ -313,13 +214,12 @@ private:
     }
     
     void generateExcavationGrid() {
-        if (!excavation_area_ || excavation_area_->empty() || !excavation_kdtree_) return;
+        if (!excavation_area_ || excavation_area_->empty()) return;
         
-        // 掘削エリアの範囲を計算（Z軸も含む）
         grid_min_x_ = grid_min_y_ = excavation_min_z_ = std::numeric_limits<double>::max();
         grid_max_x_ = grid_max_y_ = excavation_max_z_ = std::numeric_limits<double>::lowest();
         
-        for (const auto& point : excavation_area_->points) {
+        for (const auto& point : excavation_area_->points) {//掘削エリアの境界計算
             grid_min_x_ = std::min(grid_min_x_, static_cast<double>(point.x));
             grid_max_x_ = std::max(grid_max_x_, static_cast<double>(point.x));
             grid_min_y_ = std::min(grid_min_y_, static_cast<double>(point.y));
@@ -328,258 +228,122 @@ private:
             excavation_max_z_ = std::max(excavation_max_z_, static_cast<double>(point.z));
         }
         
-        // グリッドの範囲を拡張
-        double margin = opt_params_.grid_resolution;
+        double margin = grid_resolution_;
         grid_min_x_ -= margin; grid_max_x_ += margin;
         grid_min_y_ -= margin; grid_max_y_ += margin;
         
-        grid_width_ = static_cast<int>(std::ceil((grid_max_x_ - grid_min_x_) / opt_params_.grid_resolution)) + 1;
-        grid_height_ = static_cast<int>(std::ceil((grid_max_y_ - grid_min_y_) / opt_params_.grid_resolution)) + 1;
-        
-        RCLCPP_INFO(this->get_logger(), 
-                   "Excavation area bounds: X[%.2f, %.2f], Y[%.2f, %.2f], Z[%.2f, %.2f]", 
-                   grid_min_x_, grid_max_x_, grid_min_y_, grid_max_y_, excavation_min_z_, excavation_max_z_);
+        grid_width_ = static_cast<int>(std::ceil((grid_max_x_ - grid_min_x_) / grid_resolution_)) + 1;
+        grid_height_ = static_cast<int>(std::ceil((grid_max_y_ - grid_min_y_) / grid_resolution_)) + 1;
         
         excavation_grid_.clear();
         excavation_grid_.resize(grid_height_, std::vector<GridCell>(grid_width_));
         
-        int steep_slope_count = 0;
-        int total_valid_cells = 0;
-        int failed_z_estimation = 0;
-        
+        int valid_cells = 0;
         for (int i = 0; i < grid_height_; ++i) {
             for (int j = 0; j < grid_width_; ++j) {
-                double x = grid_min_x_ + j * opt_params_.grid_resolution;
-                double y = grid_min_y_ + i * opt_params_.grid_resolution;
+                double x = grid_min_x_ + j * grid_resolution_;
+                double y = grid_min_y_ + i * grid_resolution_;
                 
-                // より柔軟なZ座標推定
                 double estimated_z;
-                bool z_valid = estimateZCoordinateRobust(x, y, estimated_z);
-                
-                if (!z_valid) {
+                if (estimateZCoordinate(x, y, estimated_z)) {//Z座標の推定に成功した場合, estimated_zにZ座標が格納される
+                    excavation_grid_[i][j] = GridCell(x, y, estimated_z);//std::vector<std::vector<GridCell>> excavation_grid_;
+                    computeCellSurfaceNormal(excavation_grid_[i][j]);//cell.surface_normalに法線を格納(GridCell構造体のメンバ)
+                    valid_cells++;//有効なセル数をカウント
+                } else {
                     excavation_grid_[i][j].is_valid = false;
-                    failed_z_estimation++;
-                    continue;
-                }
-                
-                excavation_grid_[i][j] = GridCell(x, y, estimated_z);
-                excavation_grid_[i][j].is_valid = true;
-                
-                computeCellSlopeInfo(excavation_grid_[i][j], x, y, estimated_z, excavation_kdtree_);
-                double cell_weight = calculateCellWeight(x, y, estimated_z, excavation_grid_[i][j]);
-                excavation_grid_[i][j].weight = cell_weight;
-                
-                total_valid_cells++;
-                if (excavation_grid_[i][j].is_steep_slope) {
-                    steep_slope_count++;
                 }
             }
         }
         
-        RCLCPP_INFO(this->get_logger(), 
-                   "Generated grid: %dx%d, Valid cells: %d, Failed Z estimation: %d, Steep slopes: %d (%.1f%%), Threshold: %.1f degrees", 
-                   grid_width_, grid_height_, total_valid_cells, failed_z_estimation, steep_slope_count,
-                   total_valid_cells > 0 ? (steep_slope_count * 100.0 / total_valid_cells) : 0.0,
-                   opt_params_.steep_slope_threshold * 180.0 / M_PI);
-        
+        // RCLCPP_INFO(this->get_logger(), "Generated grid: %dx%d (%d valid cells)", 
+        //            grid_width_, grid_height_, valid_cells);
         publishGridVisualization();
     }
     
-    // 点群のハッシュ値を計算して変化を検出
-    std::size_t calculatePointCloudHash(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud) {
-        if (!cloud || cloud->empty()) return 0;
-        
-        std::size_t hash = 0;
-        std::hash<float> hasher;
-        
-        // 点群サイズをハッシュに含める
-        hash ^= std::hash<std::size_t>{}(cloud->size()) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
-        
-        // 全ての点をハッシュ計算に含めるとコストが高いため、
-        // サンプリングして代表的な点のみを使用
-        std::size_t step = std::max(1UL, cloud->size() / 100);  // 最大100点をサンプル
-        
-        for (std::size_t i = 0; i < cloud->size(); i += step) {
-            const auto& point = cloud->points[i];
-            hash ^= hasher(point.x) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
-            hash ^= hasher(point.y) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
-            hash ^= hasher(point.z) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
-        }
-        
-        return hash;
-    }
-    
-    bool estimateZCoordinateRobust(double x, double y, double& estimated_z) {
+    bool estimateZCoordinate(double x, double y, double& estimated_z) {
         pcl::PointXYZRGB search_point;
-        search_point.x = x; search_point.y = y; search_point.z = (excavation_min_z_ + excavation_max_z_) / 2.0;  // 中央値を使用
+        search_point.x = x; search_point.y = y; search_point.z = excavation_max_z_;
         
         std::vector<int> point_indices;
         std::vector<float> point_distances;
         
-        // 段階的に検索半径を拡大
-        std::vector<double> search_radii = {
-            opt_params_.grid_resolution * 1.5,
-            opt_params_.grid_resolution * 3.0,
-            opt_params_.grid_resolution * 5.0,
-            std::max(5.0, opt_params_.grid_resolution * 10.0)
-        };
+        double search_radius = grid_resolution_ * 3.0;
         
-        for (double search_radius : search_radii) {
-            if (excavation_kdtree_->radiusSearch(search_point, search_radius, 
-                                               point_indices, point_distances) > 0) {
+        if (excavation_kdtree_->radiusSearch(search_point, search_radius, point_indices, point_distances) > 0) {
+            double best_z = excavation_max_z_;
+            bool found = false;
+            
+            for (int idx : point_indices) {
+                const auto& point = excavation_area_->points[idx];
+                double dist_2d = sqrt(pow(point.x - x, 2) + pow(point.y - y, 2));
                 
-                if (point_distances.size() >= 3) {  // 最低3点は欲しい
-                    // 重み付き平均を計算（より近い点により大きな重み）
-                    double sum_z = 0.0, sum_weight = 0.0;
-                    
-                    for (size_t i = 0; i < point_indices.size(); ++i) {
-                        const auto& point = excavation_area_->points[point_indices[i]];
-                        double distance_2d = sqrt(pow(point.x - x, 2) + pow(point.y - y, 2));
-                        
-                        // XY平面での距離が検索半径の半分以内の点を優先
-                        if (distance_2d <= search_radius * 0.5) {
-                            double weight = (distance_2d < 1e-6) ? 1000.0 : 1.0 / (distance_2d * distance_2d + 0.01);
-                            sum_z += point.z * weight;
-                            sum_weight += weight;
-                        }
-                    }
-                    
-                    if (sum_weight > 0) {
-                        estimated_z = sum_z / sum_weight;
-                        
-                        // 推定値が合理的な範囲にあるかチェック
-                        if (estimated_z >= excavation_min_z_ - 1.0 && 
-                            estimated_z <= excavation_max_z_ + 1.0) {
-                            return true;
-                        }
+                if (dist_2d <= grid_resolution_ * 1.5) {
+                    if (!found || point.z < best_z) {
+                        best_z = point.z;
+                        found = true;
                     }
                 }
             }
-        }
-        
-        // 最後の手段：最近傍の点を使用
-        if (excavation_kdtree_->nearestKSearch(search_point, 1, point_indices, point_distances) > 0) {
-            estimated_z = excavation_area_->points[point_indices[0]].z;
-            RCLCPP_DEBUG(this->get_logger(), 
-                        "Using nearest neighbor fallback for point (%.2f, %.2f) -> Z=%.2f", 
-                        x, y, estimated_z);
-            return true;
+            
+            if (found) {
+                estimated_z = best_z;
+                return true;
+            }
         }
         
         return false;
     }
     
-    void computeCellSlopeInfo(GridCell& cell, double x, double y, double z, 
-                             pcl::KdTreeFLANN<pcl::PointXYZRGB>::Ptr kdtree) {
-        if (!terrain_normals_ || terrain_normals_->empty()) {
-            cell.surface_normal.normal_x = 0.0;
-            cell.surface_normal.normal_y = 0.0;
-            cell.surface_normal.normal_z = 1.0;
-            cell.slope_angle = 0.0;
-            cell.slope_direction = 0.0;
-            cell.surface_roughness = 0.0;
-            cell.is_steep_slope = false;
-            return;
-        }
+    void computeCellSurfaceNormal(GridCell& cell) {//各セルの法線計算
+        if (!terrain_normals_ || terrain_normals_->empty()) return;
         
-        pcl::PointXYZRGB search_point;
-        search_point.x = x; search_point.y = y; search_point.z = z;
+        pcl::PointXYZRGB search_point;//探索したい位置の中心
+        search_point.x = cell.x; search_point.y = cell.y; search_point.z = cell.z;
         
-        std::vector<int> point_indices;
-        std::vector<float> point_distances;
+        std::vector<int> point_indices;//radiusSearchで取得された近傍点のインデックス配列
+        std::vector<float> point_distances;//探索の中心から各近傍店までの距離
         
-        if (kdtree->radiusSearch(search_point, opt_params_.surface_normal_search_radius, 
-                                point_indices, point_distances) > 0) {
+        if (excavation_kdtree_->radiusSearch(search_point, NORMAL_SEARCH_RADIUS, 
+                                           point_indices, point_distances) > 0) {//掘削エリアの点群から法線を取得
             
             double sum_nx = 0.0, sum_ny = 0.0, sum_nz = 0.0;
-            double sum_roughness = 0.0;
-            int valid_normals = 0;
+            int valid_count = 0;
             
-            for (size_t i = 0; i < point_indices.size() && i < 15; ++i) {
-                int idx = point_indices[i];
-                if (idx >= 0 && idx < static_cast<int>(terrain_normals_->size())) {
+            for (int idx : point_indices) {
+                if (idx < static_cast<int>(terrain_normals_->size())) {//terrain_normalsは
                     const auto& normal = terrain_normals_->points[idx];
-                    
                     if (std::isfinite(normal.normal_x) && std::isfinite(normal.normal_y) && 
-                        std::isfinite(normal.normal_z) && 
-                        (normal.normal_x*normal.normal_x + normal.normal_y*normal.normal_y + 
-                         normal.normal_z*normal.normal_z) > 0.5) {
-                        
+                        std::isfinite(normal.normal_z)) {
                         sum_nx += normal.normal_x;
                         sum_ny += normal.normal_y;
                         sum_nz += normal.normal_z;
-                        
-                        double dot = normal.normal_z;
-                        sum_roughness += (1.0 - abs(dot));
-                        valid_normals++;
+                        valid_count++;
                     }
                 }
             }
             
-            if (valid_normals > 0) {
+            if (valid_count > 0) {
                 double norm = sqrt(sum_nx*sum_nx + sum_ny*sum_ny + sum_nz*sum_nz);
                 if (norm > 1e-6) {
                     cell.surface_normal.normal_x = sum_nx / norm;
                     cell.surface_normal.normal_y = sum_ny / norm;
                     cell.surface_normal.normal_z = sum_nz / norm;
-                } else {
-                    cell.surface_normal.normal_x = 0.0;
-                    cell.surface_normal.normal_y = 0.0;
-                    cell.surface_normal.normal_z = 1.0;
                 }
-                cell.surface_roughness = sum_roughness / valid_normals;
             }
-        } else {
-            cell.surface_normal.normal_x = 0.0;
-            cell.surface_normal.normal_y = 0.0;
-            cell.surface_normal.normal_z = 1.0;
-            cell.surface_roughness = 0.0;
         }
-        
-        double normal_z_abs = static_cast<double>(abs(cell.surface_normal.normal_z));
-        cell.slope_angle = acos(std::max(0.0, std::min(1.0, normal_z_abs)));
-        
-        if (abs(cell.surface_normal.normal_x) > 1e-6 || abs(cell.surface_normal.normal_y) > 1e-6) {
-            cell.slope_direction = atan2(cell.surface_normal.normal_y, cell.surface_normal.normal_x);
-        } else {
-            cell.slope_direction = 0.0;
-        }
-        
-        cell.is_steep_slope = (cell.slope_angle > opt_params_.steep_slope_threshold);
-    }
-    
-    double calculateCellWeight(double x, double y, double z, const GridCell& cell) {
-        double weight = 1.0;
-        
-        double center_x = (grid_min_x_ + grid_max_x_) / 2.0;
-        double center_y = (grid_min_y_ + grid_max_y_) / 2.0;
-        double distance_to_center = sqrt(pow(x - center_x, 2) + pow(y - center_y, 2));
-        double max_distance = sqrt(pow(grid_max_x_ - grid_min_x_, 2) + pow(grid_max_y_ - grid_min_y_, 2)) / 2.0;
-        
-        weight *= (1.0 + 2.0 * (1.0 - distance_to_center / max_distance));
-        
-        double depth_factor = std::max(0.5, 1.0 - z / 10.0);
-        weight *= depth_factor;
-        
-        if (cell.is_steep_slope) weight *= opt_params_.slope_weight_multiplier;
-        
-        double roughness_factor = 1.0 + cell.surface_roughness;
-        weight *= roughness_factor;
-        
-        return std::max(0.1, weight);
     }
     
     bool getZX120Position() {
         try {
-            geometry_msgs::msg::TransformStamped transform_stamped = 
+            geometry_msgs::msg::TransformStamped transform = 
                 tf_buffer_->lookupTransform("map", "zx120/base_link", tf2::TimePointZero, 
                                           tf2::durationFromSec(0.1));
             
-            zx120_lidar_position_.x = transform_stamped.transform.translation.x + zx120_offset_x_;
-            zx120_lidar_position_.y = transform_stamped.transform.translation.y + zx120_offset_y_;
-            zx120_lidar_position_.z = transform_stamped.transform.translation.z + zx120_offset_z_;
-            zx120_lidar_position_.pitch = zx120_pitch_;
-            zx120_lidar_position_.yaw = zx120_yaw_;
+            zx120_lidar_position_.x = transform.transform.translation.x + ZX120_OFFSET_X;
+            zx120_lidar_position_.y = transform.transform.translation.y + ZX120_OFFSET_Y;
+            zx120_lidar_position_.z = transform.transform.translation.z + ZX120_OFFSET_Z;
+            zx120_lidar_position_.pitch = ZX120_PITCH;
+            zx120_lidar_position_.yaw = ZX120_YAW;
             
             return true;
         } catch (tf2::TransformException& ex) {
@@ -588,24 +352,18 @@ private:
     }
     
     void runOptimization() {
-        if (!optimization_enabled_ || excavation_grid_.empty() || 
-            !terrain_cloud_ || terrain_cloud_->empty() || !terrain_kdtree_) return;
+        if (excavation_grid_.empty() || !terrain_cloud_ || !getZX120Position()) return;
         
         updateParameters();
         
-        if (!getZX120Position()) return;
-        
-        std::vector<LidarPosition> candidates = generateCandidatePositions();
+        auto candidates = generateCandidatePositions();//候補位置の生成
         
         double best_score = -std::numeric_limits<double>::infinity();
         LidarPosition best_candidate;
         
-        candidate_evaluations_.clear();
-        
         for (auto& candidate : candidates) {
-            DualLidarEvaluation evaluation = evaluateDualLidarSetupGrid(zx120_lidar_position_, candidate);
-            candidate.total_score = evaluation.weighted_total_score;
-            candidate_evaluations_.push_back(evaluation);
+            auto evaluation = evaluatePosition(candidate);
+            candidate.total_score = evaluation.total_score;
             
             if (candidate.total_score > best_score) {
                 best_score = candidate.total_score;
@@ -616,14 +374,20 @@ private:
         best_mobile_position_ = best_candidate;
         candidate_positions_ = candidates;
         
+        RCLCPP_INFO(this->get_logger(), 
+                   "Best position: (%.2f, %.2f, %.2f) score: %.2f", 
+                   best_mobile_position_.x, best_mobile_position_.y, 
+                   best_mobile_position_.z, best_score);
+        
         publishOptimalPosition();
         publishCandidatePositions();
+        publishGridVisualization();
     }
     
     std::vector<LidarPosition> generateCandidatePositions() {
-        std::vector<LidarPosition> candidates;
+        std::vector<LidarPosition> candidates;//LidaPosition：x,y,z,pitch,yaw,total_score
         
-        double expanded_min_x = grid_min_x_ - search_radius_;
+        double expanded_min_x = grid_min_x_ - search_radius_;//掘削エリアをsearch_radius_分だけ拡大
         double expanded_max_x = grid_max_x_ + search_radius_;
         double expanded_min_y = grid_min_y_ - search_radius_;
         double expanded_max_y = grid_max_y_ + search_radius_;
@@ -632,80 +396,31 @@ private:
         double center_y = (grid_min_y_ + grid_max_y_) / 2.0;
         double center_z = (excavation_min_z_ + excavation_max_z_) / 2.0;
         
-        // 碁盤の目状の配置のための間隔を計算
-        // num_candidates_から適切なグリッド数を決定
-        int grid_candidates_per_side = static_cast<int>(std::ceil(std::sqrt(static_cast<double>(num_candidates_))));
+        int grid_size = static_cast<int>(std::ceil(std::sqrt(static_cast<double>(num_candidates_))));
+        double x_step = (expanded_max_x - expanded_min_x) / (grid_size - 1);
+        double y_step = (expanded_max_y - expanded_min_y) / (grid_size - 1);
         
-        double x_step = (expanded_max_x - expanded_min_x) / (grid_candidates_per_side - 1);
-        double y_step = (expanded_max_y - expanded_min_y) / (grid_candidates_per_side - 1);
-        
-        RCLCPP_INFO(this->get_logger(), 
-                   "Generating %dx%d grid of candidates (target: %d) with steps: X=%.2f, Y=%.2f", 
-                   grid_candidates_per_side, grid_candidates_per_side, num_candidates_, x_step, y_step);
-        
-        for (int i = 0; i < grid_candidates_per_side; ++i) {
-            for (int j = 0; j < grid_candidates_per_side; ++j) {
+        for (int i = 0; i < grid_size; ++i) {
+            for (int j = 0; j < grid_size; ++j) {
                 double x = expanded_min_x + i * x_step;
                 double y = expanded_min_y + j * y_step;
                 
-                // ZX120との距離チェック
+                // ZX120に近すぎる位置を除外
                 double dist_to_zx120 = sqrt(pow(x - zx120_lidar_position_.x, 2) + 
                                           pow(y - zx120_lidar_position_.y, 2));
-                if (dist_to_zx120 < 2.0) continue;
-                
-                // 掘削エリア内の点は除外
-                if (x >= grid_min_x_ && x <= grid_max_x_ && y >= grid_min_y_ && y <= grid_max_y_) continue;
-                
-                double ground_z = getGroundHeight(x, y);
-                double z = ground_z + sensor_height_;
-                
-                // 掘削エリア中心への視線角度を計算
-                double dx = center_x - x;
-                double dy = center_y - y;
-                double dz = center_z - z;
-                double horizontal_distance = sqrt(dx*dx + dy*dy);
-                
-                if (horizontal_distance < 0.1) continue; // 中心に近すぎる場合をスキップ
-                
-                double elevation_angle = atan2(-dz, horizontal_distance);
-                
-                if (elevation_angle >= min_elevation_angle_ && elevation_angle <= max_elevation_angle_) {
-                    double pitch = -M_PI/2 + elevation_angle;
-                    double yaw = atan2(dy, dx);
-                    candidates.emplace_back(x, y, z, pitch, yaw);
-                }
-            }
-        }
-        
-        RCLCPP_INFO(this->get_logger(), "Generated %zu valid grid-based candidate positions", candidates.size());
-        
-        // 候補数が少なすぎる場合は、より密なグリッドを生成
-        if (candidates.size() < static_cast<std::size_t>(num_candidates_ * 0.3)) {
-            RCLCPP_WARN(this->get_logger(), 
-                       "Grid generated too few candidates (%zu), generating denser grid", candidates.size());
-            return generateDenseCandidateGrid(expanded_min_x, expanded_max_x, 
-                                            expanded_min_y, expanded_max_y, 
-                                            center_x, center_y, center_z);
-        }
-        
-        return candidates;
-    }
-    
-    // より密なグリッドを生成する補助関数
-    std::vector<LidarPosition> generateDenseCandidateGrid(double min_x, double max_x, 
-                                                         double min_y, double max_y,
-                                                         double center_x, double center_y, double center_z) {
-        std::vector<LidarPosition> candidates;
-        
-        // より細かい間隔で生成
-        double spacing = std::min(search_radius_ * 0.5, 2.0);  // 0.5m間隔または2m間隔の小さい方
-        
-        for (double x = min_x; x <= max_x; x += spacing) {
-            for (double y = min_y; y <= max_y; y += spacing) {
-                double dist_to_zx120 = sqrt(pow(x - zx120_lidar_position_.x, 2) + 
-                                          pow(y - zx120_lidar_position_.y, 2));
-                if (dist_to_zx120 < 2.0) continue;
-                
+                if (dist_to_zx120 < 0.5) continue;
+                                
+                // より簡潔版：掘削エリアを80%に縮小
+                // double margin = 0.2; // 20%のマージン
+                // double shrunk_min_x = grid_min_x_ + (grid_max_x_ - grid_min_x_) * margin;
+                // double shrunk_max_x = grid_max_x_ - (grid_max_x_ - grid_min_x_) * margin;
+                // double shrunk_min_y = grid_min_y_ + (grid_max_y_ - grid_min_y_) * margin;
+                // double shrunk_max_y = grid_max_y_ - (grid_max_y_ - grid_min_y_) * margin;
+
+                // if (x >= shrunk_min_x && x <= shrunk_max_x && y >= shrunk_min_y && y <= shrunk_max_y) continue;
+
+
+                // 掘削エリア内を除外,コメントアウトしてもいいかも
                 if (x >= grid_min_x_ && x <= grid_max_x_ && y >= grid_min_y_ && y <= grid_max_y_) continue;
                 
                 double ground_z = getGroundHeight(x, y);
@@ -714,22 +429,19 @@ private:
                 double dx = center_x - x;
                 double dy = center_y - y;
                 double dz = center_z - z;
-                double horizontal_distance = sqrt(dx*dx + dy*dy);
+                double horizontal_distance = sqrt(dx*dx + dy*dy);//掘削エリアの中心点とモバイルLiDAR候補位置との間のXY平面（水平面）での距離
                 
                 if (horizontal_distance < 0.1) continue;
                 
                 double elevation_angle = atan2(-dz, horizontal_distance);
                 
-                if (elevation_angle >= min_elevation_angle_ && elevation_angle <= max_elevation_angle_) {
+                if (elevation_angle >= MIN_ELEVATION && elevation_angle <= MAX_ELEVATION) {//掘削エリアの中心点がモバイルLiDAR候補位置から見てどの角度にあるか
                     double pitch = -M_PI/2 + elevation_angle;
                     double yaw = atan2(dy, dx);
-                    candidates.emplace_back(x, y, z, pitch, yaw);
+                    candidates.emplace_back(x, y, z, pitch, yaw);//座標系：map??
                 }
             }
         }
-        
-        RCLCPP_INFO(this->get_logger(), "Generated %zu candidates with dense grid (spacing: %.2f)", 
-                   candidates.size(), spacing);
         
         return candidates;
     }
@@ -743,13 +455,13 @@ private:
         std::vector<int> point_indices;
         std::vector<float> point_distances;
         
-        if (terrain_kdtree_->radiusSearch(search_point, 2.0, point_indices, point_distances) > 0) {
+        if (terrain_kdtree_->radiusSearch(search_point, 2.0, point_indices, point_distances) > 0) {//探索半径2.0m
             double max_z = std::numeric_limits<double>::lowest();
-            for (int idx : point_indices) {
+            for (int idx : point_indices) {//近傍点の中で最も高い点を地面とする
                 const auto& point = terrain_cloud_->points[idx];
                 double dx = point.x - x;
                 double dy = point.y - y;
-                if (sqrt(dx*dx + dy*dy) < 1.0) {
+                if (sqrt(dx*dx + dy*dy) < 1.0) {//1m以内の点のみ考慮
                     max_z = std::max(max_z, static_cast<double>(point.z));
                 }
             }
@@ -759,190 +471,97 @@ private:
         return 0.0;
     }
     
-    DualLidarEvaluation evaluateDualLidarSetupGrid(const LidarPosition& zx120_pos, 
-                                                  const LidarPosition& mobile_pos) {
-        DualLidarEvaluation evaluation = {};
+    SimplifiedEvaluation evaluatePosition(const LidarPosition& mobile_pos) {
+        SimplifiedEvaluation evaluation = {};
         
-        double total_weighted_coverage = 0.0;
-        double total_weighted_redundancy = 0.0;
-        double total_slope_adaptation = 0.0;
-        double total_weight = 0.0;
+        double total_score = 0.0;
         int covered_cells = 0;
-        int redundant_cells = 0;
         int total_valid_cells = 0;
-        int steep_slope_cells = 0;
-        int well_covered_steep_cells = 0;
         
         for (int i = 0; i < grid_height_; ++i) {
             for (int j = 0; j < grid_width_; ++j) {
                 GridCell& cell = excavation_grid_[i][j];
                 
                 if (!cell.is_valid) continue;
-                
                 total_valid_cells++;
-                if (cell.is_steep_slope) steep_slope_cells++;
                 
-                double zx120_score = evaluateGridCellFromLidarWithSlope(zx120_pos, cell);
-                double mobile_score = evaluateGridCellFromLidarWithSlope(mobile_pos, cell);
+                cell.score_zx120 = evaluateCellScore(zx120_lidar_position_, cell);
+                cell.score_mobile = evaluateCellScore(mobile_pos, cell);
+                cell.combined_score = std::max(cell.score_zx120, cell.score_mobile);
+                std::cout << "Cell (" << i << "," << j << ") - ZX120 Score: " 
+                          << cell.score_zx120 << ", Mobile Score: " 
+                          << cell.score_mobile << ", Combined: " 
+                          << cell.combined_score << std::endl;
                 
-                bool zx120_visible = (zx120_score > 0);
-                bool mobile_visible = (mobile_score > 0);
-                
-                cell.coverage_score = std::max(zx120_score, mobile_score);
-                cell.redundancy_score = (zx120_visible && mobile_visible) ? 
-                    std::min(zx120_score, mobile_score) : 0.0;
-                
-                cell.slope_score = calculateSlopeAdaptationScore(cell, zx120_pos, mobile_pos, 
-                                                               zx120_score, mobile_score);
-                
-                cell.total_score = cell.coverage_score + cell.redundancy_score + cell.slope_score;
-                
-                if (zx120_visible || mobile_visible) {
+                if (cell.combined_score > 0) {
                     covered_cells++;
-                    total_weighted_coverage += cell.coverage_score * cell.weight;
-                    
-                    if (cell.is_steep_slope && cell.slope_score > 0.5) {
-                        well_covered_steep_cells++;
-                    }
+                    total_score += cell.combined_score;
                 }
-                
-                if (zx120_visible && mobile_visible) {
-                    redundant_cells++;
-                    total_weighted_redundancy += cell.redundancy_score * cell.weight;
-                }
-                
-                total_slope_adaptation += cell.slope_score * cell.weight;
-                total_weight += cell.weight;
             }
         }
         
+        evaluation.total_score = total_score;
         evaluation.covered_cells = covered_cells;
-        evaluation.redundant_cells = redundant_cells;
         evaluation.total_cells = total_valid_cells;
-        evaluation.steep_slope_cells = steep_slope_cells;
-        evaluation.well_covered_steep_cells = well_covered_steep_cells;
-        
-        if (total_weight > 0) {
-            evaluation.coverage_score = total_weighted_coverage / total_weight;
-            evaluation.redundancy_score = total_weighted_redundancy / total_weight;
-            evaluation.slope_adaptation_score = total_slope_adaptation / total_weight;
-            
-            double complementary_contribution = 0.0;
-            for (int i = 0; i < grid_height_; ++i) {
-                for (int j = 0; j < grid_width_; ++j) {
-                    const GridCell& cell = excavation_grid_[i][j];
-                    if (!cell.is_valid) continue;
-                    
-                    double zx120_score = evaluateGridCellFromLidarWithSlope(zx120_pos, cell);
-                    double mobile_score = evaluateGridCellFromLidarWithSlope(mobile_pos, cell);
-                    
-                    if (zx120_score <= 0 && mobile_score > 0) {
-                        complementary_contribution += mobile_score * cell.weight;
-                    }
-                }
-            }
-            evaluation.complementary_score = complementary_contribution / total_weight;
-        } else {
-            evaluation.coverage_score = 0.0;
-            evaluation.redundancy_score = 0.0;
-            evaluation.complementary_score = 0.0;
-            evaluation.slope_adaptation_score = 0.0;
-        }
-        
-        evaluation.weighted_total_score = 
-            opt_params_.coverage_weight * evaluation.coverage_score +
-            opt_params_.redundancy_weight * evaluation.redundancy_score +
-            opt_params_.complementary_weight * evaluation.complementary_score +
-            opt_params_.slope_adaptation_weight * evaluation.slope_adaptation_score;
-        
+        evaluation.coverage_ratio = total_valid_cells > 0 ? 
+            static_cast<double>(covered_cells) / total_valid_cells : 0.0;
+        // std::cout << "total_score: " << total_score << std::endl;
         return evaluation;
     }
     
-    double evaluateGridCellFromLidarWithSlope(const LidarPosition& lidar_pos, const GridCell& cell) {
-        double base_score = evaluateGridCellFromLidar(lidar_pos, cell);
-        if (base_score <= 0) return 0.0;
-        
+    double evaluateCellScore(const LidarPosition& lidar_pos, const GridCell& cell) {
         double dx = cell.x - lidar_pos.x;
         double dy = cell.y - lidar_pos.y;
         double dz = cell.z - lidar_pos.z;
-        double distance = sqrt(dx*dx + dy*dy + dz*dz);
+        double L = sqrt(dx*dx + dy*dy + dz*dz);
         
-        double ray_x = dx / distance;
-        double ray_y = dy / distance;
-        double ray_z = dz / distance;
+        // // 距離制約
+        // if (L < MIN_DISTANCE || L > max_distance_) return 0.0;
         
-        double dot_product = -(ray_x * cell.surface_normal.normal_x + 
-                              ray_y * cell.surface_normal.normal_y + 
-                              ray_z * cell.surface_normal.normal_z);
+        // // FOV確認
+        // if (!isInFieldOfView(lidar_pos, cell, dx, dy, dz, L)) return 0.0;
         
-        double incidence_angle = acos(std::max(0.0, std::min(1.0, abs(dot_product))));
+        // // 視認性確認
+        // if (!checkVisibility(lidar_pos, cell)) return 0.0;
         
-        if (incidence_angle < opt_params_.min_incidence_angle || 
-            incidence_angle > opt_params_.max_incidence_angle) {
-            return 0.0;
-        }
+        // 角度計算
+        double beam_x = dx / L;
+        double beam_y = dy / L;
+        double beam_z = dz / L;
         
-        double angle_difference = abs(incidence_angle - opt_params_.optimal_incidence_angle);
-        double angle_penalty = exp(-angle_difference / (M_PI/6));
+        //dot_product = beam_vector · normal_vector = |beam|(単位ベクトル) × |normal|(単位ベクトル) × cos(α)なので、|beam|=1, |normal|=1より、dot_product = cos(α)
+        double dot_product = beam_x * cell.surface_normal.normal_x + 
+                           beam_y * cell.surface_normal.normal_y + 
+                           beam_z * cell.surface_normal.normal_z;
         
-        if (cell.is_steep_slope) {
-            angle_penalty = exp(-angle_difference / (M_PI/9));
-        }
+        double theta = acos(std::max(0.0, std::min(1.0, std::abs(dot_product))));//逆余弦関数で角度を求める, 0~π/2の範囲に制限,垂直のときは0度,水平のときは90度
         
-        return base_score * angle_penalty;
+        // 評価関数: α*θ + β*(1/L)
+        // double score = ALPHA * theta + BETA * (1.0 / L);
+        // 修正版：小さい角度（垂直入射）を高く評価
+        double score = ALPHA * (M_PI/2 - theta) + BETA * (1.0 / L);
+        // std::cout << "Cell at (" << cell.x << "," << cell.y << "," << cell.z 
+        //           << ") - Distance: " << L << ", Angle: " << theta 
+        //           << ", Score: " << score << std::endl;
+        
+        return std::max(0.0, score);
     }
     
-    double calculateSlopeAdaptationScore(const GridCell& cell, 
-                                       const LidarPosition& /* zx120_pos */, 
-                                       const LidarPosition& /* mobile_pos */,
-                                       double zx120_score, double mobile_score) {
-        if (!cell.is_steep_slope) return 0.1;
-        
-        double adaptation_score = 0.0;
-        
-        if (zx120_score > 0.5 && mobile_score > 0.5) {
-            adaptation_score = 1.0;
-        } else if (std::max(zx120_score, mobile_score) > 0.7) {
-            adaptation_score = 0.7;
-        } else if (zx120_score > 0 || mobile_score > 0) {
-            adaptation_score = 0.3;
-        }
-        
-        adaptation_score *= (1.0 + cell.surface_roughness * 0.5);
-        
-        return adaptation_score;
-    }
-    
-    double evaluateGridCellFromLidar(const LidarPosition& lidar_pos, const GridCell& cell) {
-        double dx = cell.x - lidar_pos.x;
-        double dy = cell.y - lidar_pos.y;
-        double dz = cell.z - lidar_pos.z;
-        double distance = sqrt(dx*dx + dy*dy + dz*dz);
-        
-        if (distance < opt_params_.min_distance || distance > opt_params_.max_distance) return 0.0;
-        
+    bool isInFieldOfView(const LidarPosition& lidar_pos, const GridCell& cell, 
+                        double dx, double dy, double dz, double distance) {
         double azimuth = atan2(dy, dx);
         double elevation = atan2(dz, sqrt(dx*dx + dy*dy));
         
         double azimuth_diff = fmod(azimuth - lidar_pos.yaw + M_PI, 2*M_PI) - M_PI;
         double elevation_diff = elevation - lidar_pos.pitch;
         
-        if (abs(azimuth_diff) > fov_horizontal_/2 || abs(elevation_diff) > fov_vertical_/2) return 0.0;
-        
-        if (!checkVisibility(lidar_pos, cell)) return 0.0;
-        
-        double distance_score = 1.0 / (1.0 + distance/10.0);
-        double angle_score = cos(abs(elevation_diff)) * cos(abs(azimuth_diff));
-        double visibility_score = 1.0;
-        
-        double total_score = opt_params_.distance_weight * distance_score +
-                           opt_params_.angle_weight * angle_score +
-                           opt_params_.visibility_weight * visibility_score;
-        
-        return std::max(0.0, total_score);
+        return (std::abs(azimuth_diff) <= FOV_HORIZONTAL / 2.0) &&
+               (std::abs(elevation_diff) <= FOV_VERTICAL / 2.0);
     }
     
     bool checkVisibility(const LidarPosition& lidar_pos, const GridCell& cell) {
+        if (!terrain_kdtree_) return true;
+        
         double dx = cell.x - lidar_pos.x;
         double dy = cell.y - lidar_pos.y;
         double dz = cell.z - lidar_pos.z;
@@ -952,26 +571,24 @@ private:
         double norm_dy = dy / distance;
         double norm_dz = dz / distance;
         
-        double step_distance = ray_step_size_;
-        while (step_distance < distance - ray_step_size_) {
+        double step_distance = RAY_STEP_SIZE;
+        while (step_distance < distance - RAY_STEP_SIZE) {
             double check_x = lidar_pos.x + norm_dx * step_distance;
             double check_y = lidar_pos.y + norm_dy * step_distance;
             double check_z = lidar_pos.z + norm_dz * step_distance;
             
             pcl::PointXYZRGB search_point;
-            search_point.x = check_x;
-            search_point.y = check_y;
-            search_point.z = check_z;
+            search_point.x = check_x; search_point.y = check_y; search_point.z = check_z;
             
             std::vector<int> point_indices;
             std::vector<float> point_distances;
             
-            if (terrain_kdtree_->radiusSearch(search_point, lidar_search_radius_, 
+            if (terrain_kdtree_->radiusSearch(search_point, VISIBILITY_RADIUS, 
                                             point_indices, point_distances) > 0) {
                 return false;
             }
             
-            step_distance += ray_step_size_;
+            step_distance += RAY_STEP_SIZE;
         }
         
         return true;
@@ -991,10 +608,12 @@ private:
     void publishCandidatePositions() {
         visualization_msgs::msg::MarkerArray marker_array;
         
+        // 既存マーカークリア
         visualization_msgs::msg::Marker clear_marker;
         clear_marker.action = visualization_msgs::msg::Marker::DELETEALL;
         marker_array.markers.push_back(clear_marker);
         
+        // ZX120位置マーカー
         visualization_msgs::msg::Marker zx120_marker;
         zx120_marker.header.stamp = this->now();
         zx120_marker.header.frame_id = "map";
@@ -1020,6 +639,16 @@ private:
         zx120_marker.lifetime = rclcpp::Duration::from_seconds(10.0);
         marker_array.markers.push_back(zx120_marker);
         
+        // 候補位置のスコア範囲を計算
+        double min_score = std::numeric_limits<double>::max();
+        double max_score = std::numeric_limits<double>::lowest();
+        
+        for (const auto& candidate : candidate_positions_) {
+            min_score = std::min(min_score, candidate.total_score);
+            max_score = std::max(max_score, candidate.total_score);
+        }
+        
+        // 候補位置マーカー
         for (size_t i = 0; i < candidate_positions_.size(); ++i) {
             visualization_msgs::msg::Marker marker;
             marker.header.stamp = this->now();
@@ -1038,8 +667,12 @@ private:
             marker.scale.y = 0.3;
             marker.scale.z = 0.3;
             
-            double normalized_score = std::max(0.0, std::min(1.0, 
-                (candidate_positions_[i].total_score + 50) / 100.0));
+            // スコアに基づく色付け（赤=低、緑=高）
+            double normalized_score = 0.0;
+            if (max_score > min_score) {
+                normalized_score = (candidate_positions_[i].total_score - min_score) / (max_score - min_score);
+            }
+            
             marker.color.r = 1.0 - normalized_score;
             marker.color.g = normalized_score;
             marker.color.b = 0.0;
@@ -1049,6 +682,7 @@ private:
             marker_array.markers.push_back(marker);
         }
         
+        // 最適位置マーカー
         visualization_msgs::msg::Marker best_marker;
         best_marker.header.stamp = this->now();
         best_marker.header.frame_id = "map";
@@ -1080,9 +714,31 @@ private:
     void publishGridVisualization() {
         visualization_msgs::msg::MarkerArray marker_array;
         
+        // 既存マーカークリア
         visualization_msgs::msg::Marker clear_marker;
         clear_marker.action = visualization_msgs::msg::Marker::DELETEALL;
         marker_array.markers.push_back(clear_marker);
+        
+        // スコア範囲とZ範囲を計算
+        double min_score = std::numeric_limits<double>::max();
+        double max_score = std::numeric_limits<double>::lowest();
+        double min_z = std::numeric_limits<double>::max();
+        double max_z = std::numeric_limits<double>::lowest();
+        
+        for (int i = 0; i < grid_height_; ++i) {
+            for (int j = 0; j < grid_width_; ++j) {
+                const GridCell& cell = excavation_grid_[i][j];
+                if (!cell.is_valid) continue;
+                
+                min_score = std::min(min_score, cell.combined_score);
+                max_score = std::max(max_score, cell.combined_score);
+                min_z = std::min(min_z, cell.z);
+                max_z = std::max(max_z, cell.z);
+            }
+        }
+        
+        double z_range = max_z - min_z;
+        double marker_height = std::max(0.05, z_range * 0.05);
         
         int marker_id = 0;
         for (int i = 0; i < grid_height_; ++i) {
@@ -1104,35 +760,36 @@ private:
                 marker.pose.position.z = cell.z;
                 marker.pose.orientation.w = 1.0;
                 
-                marker.scale.x = opt_params_.grid_resolution * 0.8;
-                marker.scale.y = opt_params_.grid_resolution * 0.8;
-                marker.scale.z = 0.1;
+                marker.scale.x = grid_resolution_;
+                marker.scale.y = grid_resolution_;
+                marker.scale.z = marker_height;
                 
-                if (cell.is_steep_slope) {
-                    double slope_intensity = std::min(1.0, cell.slope_angle / (M_PI/2));
-                    marker.color.r = 0.8 + 0.2 * slope_intensity;
-                    marker.color.g = 0.2;
-                    marker.color.b = 0.2;
+                // 観測可能かどうかで単純な色分け
+                if (cell.combined_score > 0) {
+                    // 観測可能：緑色
+                    marker.color.r = 0.0;
+                    marker.color.g = 1.0;
+                    marker.color.b = 0.0;
+                    marker.color.a = 0.7;
                 } else {
-                    double normalized_weight = std::min(1.0, cell.weight / 3.0);
-                    marker.color.r = 1.0 - normalized_weight;
-                    marker.color.g = 0.5;
-                    marker.color.b = normalized_weight;
+                    // 観測不可能：赤色
+                    marker.color.r = 1.0;
+                    marker.color.g = 0.0;
+                    marker.color.b = 0.0;
+                    marker.color.a = 0.5;
                 }
-                marker.color.a = 0.6;
                 
                 marker.lifetime = rclcpp::Duration::from_seconds(15.0);
                 marker_array.markers.push_back(marker);
             }
         }
-        
         grid_visualization_pub_->publish(marker_array);
     }
 };
 
 int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<GridBasedDualLidarOptimizer>());
+    rclcpp::spin(std::make_shared<SimplifiedDualLidarOptimizer>());
     rclcpp::shutdown();
     return 0;
 }
