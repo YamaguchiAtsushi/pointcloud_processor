@@ -65,7 +65,7 @@ public:
         
         this->declare_parameter("grid_resolution", 0.1);
         this->declare_parameter("sensor_height", 1.1);
-        this->declare_parameter("search_radius", 3.0);
+        this->declare_parameter("search_radius", 3.0);// 掘削エリアからの探索半径
         this->declare_parameter("max_distance", 15.0);
         this->declare_parameter("num_candidates", 100);
         this->declare_parameter("vertical_layers", 10);
@@ -99,7 +99,7 @@ public:
 private:
     static constexpr double ALPHA = 1.0;
     static constexpr double BETA = 10.0;
-    static constexpr double MIN_DISTANCE = 1.0;
+    static constexpr double MIN_DISTANCE = 1.0;// LiDARからの最小距離
     static constexpr double ZX120_OFFSET_X = 0.4;
     static constexpr double ZX120_OFFSET_Y = 0.5;
     static constexpr double ZX120_OFFSET_Z = 3.5;
@@ -107,11 +107,11 @@ private:
     static constexpr double ZX120_YAW = 0.0;
     static constexpr double FOV_HORIZONTAL = 360.0 * M_PI / 180.0;  // 全方位をカバー
     static constexpr double FOV_VERTICAL = 180.0 * M_PI / 180.0;   // 上下全範囲をカバー
-    static constexpr double NORMAL_SEARCH_RADIUS = 0.5;
-    static constexpr double RAY_STEP_SIZE = 0.2;
+    static constexpr double NORMAL_SEARCH_RADIUS = 0.5;// 法線計算用の探索半径
+    static constexpr double RAY_STEP_SIZE = 0.2;// レイキャスティングのステップサイズ
     static constexpr double VISIBILITY_RADIUS = 0.05;// 視認性チェック用の半径
-    static constexpr double MIN_ELEVATION = -80.0 * M_PI / 180.0;
-    static constexpr double MAX_ELEVATION = 85.0 * M_PI / 180.0;
+    static constexpr double MIN_ELEVATION = -80.0 * M_PI / 180.0;// 最小仰角
+    static constexpr double MAX_ELEVATION = 85.0 * M_PI / 180.0;// 最大仰角
     
     double grid_resolution_;
     double sensor_height_;
@@ -161,7 +161,7 @@ private:
         vertical_layers_ = this->get_parameter("vertical_layers").as_int();
     }
     
-    void excavationAreaCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+    void excavationAreaCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {// 掘削エリア点群のコールバック
         excavation_area_.reset(new pcl::PointCloud<pcl::PointXYZRGB>);
         pcl::fromROSMsg(*msg, *excavation_area_);
         
@@ -169,22 +169,22 @@ private:
         
         excavation_kdtree_.reset(new pcl::KdTreeFLANN<pcl::PointXYZRGB>);
         try {
-            excavation_kdtree_->setInputCloud(excavation_area_);
-            computeTerrainNormals();
-            generateExcavationGrid3D();
+            excavation_kdtree_->setInputCloud(excavation_area_);// 今後のためにKD-treeの構築
+            computeTerrainNormals();// 掘削エリアの法線計算
+            generateExcavationGrid3D();// 3Dグリッド生成
         } catch (const std::exception& e) {
             RCLCPP_ERROR(this->get_logger(), "Failed to process excavation area: %s", e.what());
         }
     }
     
-    void terrainCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+    void terrainCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {// 地形全体点群のコールバック
         terrain_cloud_.reset(new pcl::PointCloud<pcl::PointXYZRGB>);
         pcl::fromROSMsg(*msg, *terrain_cloud_);
         
         if (!terrain_cloud_->empty()) {
             terrain_kdtree_.reset(new pcl::KdTreeFLANN<pcl::PointXYZRGB>);
             try {
-                terrain_kdtree_->setInputCloud(terrain_cloud_);
+                terrain_kdtree_->setInputCloud(terrain_cloud_);// 今後のためにKD-treeの構築
             } catch (const std::exception& e) {
                 RCLCPP_ERROR(this->get_logger(), "Failed to build terrain KD-tree: %s", e.what());
             }
@@ -206,22 +206,24 @@ private:
         }
     }
     
-    void computeTerrainNormals() {
+    void computeTerrainNormals() {// 掘削エリアの法線計算
         if (!excavation_area_ || excavation_area_->empty()) return;
         
         try {
             pcl::search::KdTree<pcl::PointXYZRGB>::Ptr kdtree(new pcl::search::KdTree<pcl::PointXYZRGB>());
             kdtree->setInputCloud(excavation_area_);
             
-            normal_estimator_.setInputCloud(excavation_area_);
-            normal_estimator_.setSearchMethod(kdtree);
-            normal_estimator_.setRadiusSearch(NORMAL_SEARCH_RADIUS);
+            // pcl::NormalEstimation::pcl::PointXYZRGB, pcl::Normal> normal_estimator_ は法線計算器
+            normal_estimator_.setInputCloud(excavation_area_);// 法線計算器に点群をセット
+            normal_estimator_.setSearchMethod(kdtree);// KD-treeを法線計算器にセット
+            normal_estimator_.setRadiusSearch(NORMAL_SEARCH_RADIUS);// 探索半径を設定
             
+            // terrain_normals_ に法線計算結果を格納
             terrain_normals_.reset(new pcl::PointCloud<pcl::Normal>);
-            normal_estimator_.compute(*terrain_normals_);
+            normal_estimator_.compute(*terrain_normals_);// 法線計算
             
             for (auto& normal : terrain_normals_->points) {
-                if (normal.normal_z < 0) {
+                if (normal.normal_z < 0) {// 法線の向きを上向きに統一
                     normal.normal_x = -normal.normal_x;
                     normal.normal_y = -normal.normal_y;
                     normal.normal_z = -normal.normal_z;
@@ -239,7 +241,7 @@ private:
         grid_min_x_ = grid_min_y_ = excavation_min_z_ = std::numeric_limits<double>::max();
         grid_max_x_ = grid_max_y_ = excavation_max_z_ = std::numeric_limits<double>::lowest();
         
-        for (const auto& point : excavation_area_->points) {
+        for (const auto& point : excavation_area_->points) {// 掘削エリアの範囲を計算
             grid_min_x_ = std::min(grid_min_x_, static_cast<double>(point.x));
             grid_max_x_ = std::max(grid_max_x_, static_cast<double>(point.x));
             grid_min_y_ = std::min(grid_min_y_, static_cast<double>(point.y));
@@ -253,9 +255,11 @@ private:
         grid_min_y_ -= margin; grid_max_y_ += margin;
         excavation_min_z_ -= margin; excavation_max_z_ += margin;
         
+        // グリッドのサイズを計算
         grid_width_ = static_cast<int>(std::ceil((grid_max_x_ - grid_min_x_) / grid_resolution_)) + 1;
         grid_height_ = static_cast<int>(std::ceil((grid_max_y_ - grid_min_y_) / grid_resolution_)) + 1;
         
+        // 3Dグリッドの生成
         excavation_grid_3d_.clear();
         
         double z_range = excavation_max_z_ - excavation_min_z_;
@@ -271,10 +275,10 @@ private:
                 for (int k = 0; k < vertical_layers_; ++k) {
                     double z = excavation_min_z_ + k * z_step + z_step / 2.0;
                     
-                    if (isPointNearExcavation(x, y, z, grid_resolution_ * 1.5)) {
-                        GridCell cell(x, y, z);
-                        computeCellSurfaceNormal(cell);
-                        excavation_grid_3d_.push_back(cell);
+                    if (isPointNearExcavation(x, y, z, grid_resolution_ * 1.5)) {// 掘削エリア近傍のセルのみ有効
+                        GridCell cell(x, y, z);// セル生成
+                        computeCellSurfaceNormal(cell);// セルの法線計算
+                        excavation_grid_3d_.push_back(cell);// 有効なセルとして追加
                         valid_cells++;
                     }
                 }
@@ -286,7 +290,7 @@ private:
         publishGridVisualization();
     }
     
-    bool isPointNearExcavation(double x, double y, double z, double radius) {
+    bool isPointNearExcavation(double x, double y, double z, double radius) {//指定された座標(x, y, z)が掘削エリアの点群に近いかどうかを判定する
         pcl::PointXYZRGB search_point;
         search_point.x = x;
         search_point.y = y;
@@ -298,7 +302,7 @@ private:
         return excavation_kdtree_->radiusSearch(search_point, radius, point_indices, point_distances) > 0;
     }
     
-    void computeCellSurfaceNormal(GridCell& cell) {
+    void computeCellSurfaceNormal(GridCell& cell) {//グリッドセルの表面法線ベクトルを計算する
         if (!terrain_normals_ || terrain_normals_->empty()) return;
         
         pcl::PointXYZRGB search_point;
@@ -370,7 +374,7 @@ private:
         RCLCPP_INFO(this->get_logger(), "ZX120 position: (%.2f, %.2f, %.2f)", 
                    zx120_lidar_position_.x, zx120_lidar_position_.y, zx120_lidar_position_.z);
         
-        auto candidates = generateCandidatePositions();
+        auto candidates = generateCandidatePositions();//センサの候補位置を生成
         RCLCPP_INFO(this->get_logger(), "Generated %zu candidate positions", candidates.size());
         
         // 最初の候補位置でテスト
@@ -382,7 +386,7 @@ private:
             // 最初のセルでテスト
             if (!excavation_grid_3d_.empty()) {
                 const auto& test_cell = excavation_grid_3d_[0];
-                double dx = test_cell.x - test_pos.x;
+                double dx = test_cell.x - test_pos.x;// センサ位置からセル位置へのベクトル
                 double dy = test_cell.y - test_pos.y;
                 double dz = test_cell.z - test_pos.z;
                 double L = sqrt(dx*dx + dy*dy + dz*dz);
@@ -390,8 +394,8 @@ private:
                 RCLCPP_INFO(this->get_logger(), "Test cell at (%.2f, %.2f, %.2f), distance: %.2f", 
                            test_cell.x, test_cell.y, test_cell.z, L);
                 
-                bool in_range = (L >= MIN_DISTANCE && L <= max_distance_);
-                bool in_fov = isInFieldOfView(test_pos, test_cell, dx, dy, dz, L);
+                bool in_range = (L >= MIN_DISTANCE && L <= max_distance_);// 距離制約チェック
+                bool in_fov = isInFieldOfView(test_pos, test_cell, dx, dy, dz, L);//
                 bool visible = checkVisibility(test_pos, test_cell, false);
                 
                 RCLCPP_INFO(this->get_logger(), "Mobile test: in_range=%d, in_fov=%d, visible=%d", 
@@ -403,7 +407,7 @@ private:
         LidarPosition best_candidate;
         
         for (auto& candidate : candidates) {
-            auto evaluation = evaluatePosition(candidate);
+            auto evaluation = evaluatePosition(candidate);// 候補位置の評価
             candidate.total_score = evaluation.total_score;
             
             if (candidate.total_score > best_score) {
@@ -446,11 +450,13 @@ private:
     std::vector<LidarPosition> generateCandidatePositions() {
         std::vector<LidarPosition> candidates;
         
+        // 掘削エリアの拡張
         double expanded_min_x = grid_min_x_ - search_radius_;
         double expanded_max_x = grid_max_x_ + search_radius_;
         double expanded_min_y = grid_min_y_ - search_radius_;
         double expanded_max_y = grid_max_y_ + search_radius_;
         
+        // 掘削エリアの中心
         double center_x = (grid_min_x_ + grid_max_x_) / 2.0;
         double center_y = (grid_min_y_ + grid_max_y_) / 2.0;
         double center_z = (excavation_min_z_ + excavation_max_z_) / 2.0;
@@ -466,9 +472,9 @@ private:
                 
                 double dist_to_zx120 = sqrt(pow(x - zx120_lidar_position_.x, 2) + 
                                           pow(y - zx120_lidar_position_.y, 2));
-                if (dist_to_zx120 < 0.5) continue;
+                if (dist_to_zx120 < 0.5) continue;// ZX120に近すぎる位置は除外
                 
-                if (x >= grid_min_x_ && x <= grid_max_x_ && y >= grid_min_y_ && y <= grid_max_y_) continue;
+                if (x >= grid_min_x_ && x <= grid_max_x_ && y >= grid_min_y_ && y <= grid_max_y_) continue;// 掘削エリア内は除外
                 
                 double ground_z = getGroundHeight(x, y);
                 double z = ground_z + sensor_height_;
@@ -478,14 +484,14 @@ private:
                 double dz = center_z - z;
                 double horizontal_distance = sqrt(dx*dx + dy*dy);
                 
-                if (horizontal_distance < 0.1) continue;
+                if (horizontal_distance < 0.1) continue;// 中心に近すぎる位置は除外
                 
-                double elevation_angle = atan2(-dz, horizontal_distance);
+                double elevation_angle = atan2(-dz, horizontal_distance);//穴の中心から候補点への仰角
                 
                 if (elevation_angle >= MIN_ELEVATION && elevation_angle <= MAX_ELEVATION) {
-                    double pitch = -M_PI/2 + elevation_angle;
-                    double yaw = atan2(dy, dx);
-                    candidates.emplace_back(x, y, z, pitch, yaw);
+                    double pitch = -M_PI/2 + elevation_angle;//センサのピッチ角を設定
+                    double yaw = atan2(dy, dx);// センサのヨー角を設定
+                    candidates.emplace_back(x, y, z, pitch, yaw);//穴の中心を向くように候補位置を追加
                 }
             }
         }
@@ -605,6 +611,7 @@ private:
         double beam_y = dy / L;
         double beam_z = dz / L;
         
+        // 単位ベクトル同士の内積なので、-1から1の範囲dot_product=cos(theta)
         double dot_product = beam_x * cell.surface_normal.normal_x + 
                            beam_y * cell.surface_normal.normal_y + 
                            beam_z * cell.surface_normal.normal_z;
@@ -616,6 +623,7 @@ private:
         return std::max(0.0, score);
     }
     
+    //グリッドがLiDARの視野内にあるかどうかを判定する
     bool isInFieldOfView(const LidarPosition& lidar_pos, const GridCell& cell, 
                         double dx, double dy, double dz, double distance) {
         // 360度対応のため、常にFOV内と判定
@@ -634,6 +642,7 @@ private:
         */
     }
     
+    //LiDARからグリッドセルへの視線が遮蔽されていないかをチェックする
     bool checkVisibility(const LidarPosition& lidar_pos, const GridCell& cell, bool is_zx120) {
         // ZX120の場合は実際の点群を使用
         if (is_zx120) {
@@ -669,6 +678,7 @@ private:
         return false;
     }
     
+    //LiDARからセルまでの視線経路上に地形による遮蔽物がないかをシミュレーション
     bool checkVisibilityWithRaycasting(const LidarPosition& lidar_pos, const GridCell& cell,
                                        pcl::KdTreeFLANN<pcl::PointXYZRGB>::Ptr kdtree) {
         double dx = cell.x - lidar_pos.x;
@@ -859,9 +869,9 @@ private:
             marker.pose.position.z = cell.z;
             marker.pose.orientation.w = 1.0;
             
-            marker.scale.x = grid_resolution_ * 0.8;
-            marker.scale.y = grid_resolution_ * 0.8;
-            marker.scale.z = grid_resolution_ * 0.8;
+            marker.scale.x = grid_resolution_ * 0.6;
+            marker.scale.y = grid_resolution_ * 0.6;
+            marker.scale.z = grid_resolution_ * 0.6;
             
             // 詳細な観測状態による色分け
             if (cell.combined_score > 0) {
@@ -885,13 +895,13 @@ private:
             } else if (!cell.visible_from_zx120 && !cell.visible_from_mobile) {
                 // オクルージョン（黄色）
                 marker.color.r = 1.0;
-                marker.color.g = 1.0;
+                marker.color.g = 0.0;
                 marker.color.b = 0.0;
                 marker.color.a = 0.5;
             } else {
                 // その他の理由で観測不可（赤）
                 marker.color.r = 1.0;
-                marker.color.g = 0.0;
+                marker.color.g = 1.0;
                 marker.color.b = 0.0;
                 marker.color.a = 0.5;
             }
