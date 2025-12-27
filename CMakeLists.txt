@@ -44,6 +44,23 @@ link_directories(
 # PCL定義の追加
 add_definitions(${PCL_DEFINITIONS})
 
+add_executable(calc_drivable_area src/calc_drivable_area.cpp)
+ament_target_dependencies(calc_drivable_area
+  rclcpp
+  visualization_msgs
+  geometry_msgs
+  std_msgs
+  sensor_msgs
+  nav_msgs
+  pcl_conversions
+  pcl_ros
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+  tf2_sensor_msgs
+  tf2_eigen
+)
+
 
 add_executable(virtual_lidar src/virtual_lidar.cpp)
 ament_target_dependencies(virtual_lidar
@@ -150,6 +167,7 @@ target_link_libraries(calc_heading
 
 # インストール設定
 install(TARGETS
+  calc_drivable_area
   virtual_lidar
   excavated_surface_generator
   pointcloud_merger

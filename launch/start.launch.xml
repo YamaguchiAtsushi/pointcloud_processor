@@ -21,9 +21,13 @@
     <param name="use_sim_time" value="false"/>
   </node>
 
-  <!-- <node pkg="pointcloud_processor" exec="virtual_lidar" name="virtual_lidar" output="screen">
+  <node pkg="pointcloud_processor" exec="virtual_lidar" name="virtual_lidar" output="screen">
     <param name="use_sim_time" value="false"/>
-  </node> -->
+  </node>
+
+  <node pkg="pointcloud_processor" exec="calc_drivable_area" name="calc_drivable_area" output="screen">
+    <param name="use_sim_time" value="false"/>
+  </node>
 
   <!-- Include TF launches -->
   <include file="$(find-pkg-share pointcloud_processor)/launch/tf_zx120.launch.xml"/>

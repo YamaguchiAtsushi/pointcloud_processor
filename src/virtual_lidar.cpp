@@ -98,7 +98,7 @@ public:
     
 private:
     static constexpr double ALPHA = 1.0;
-    static constexpr double BETA = 10.0;
+    static constexpr double BETA = 1.0;
     static constexpr double MIN_DISTANCE = 1.0;// LiDARからの最小距離
     static constexpr double ZX120_OFFSET_X = 0.4;
     static constexpr double ZX120_OFFSET_Y = 0.5;
@@ -107,7 +107,7 @@ private:
     static constexpr double ZX120_YAW = 0.0;
     static constexpr double FOV_HORIZONTAL = 360.0 * M_PI / 180.0;  // 全方位をカバー
     static constexpr double FOV_VERTICAL = 180.0 * M_PI / 180.0;   // 上下全範囲をカバー
-    static constexpr double NORMAL_SEARCH_RADIUS = 0.5;// 法線計算用の探索半径
+    static constexpr double NORMAL_SEARCH_RADIUS = 1.5;// 法線計算用の探索半径
     static constexpr double RAY_STEP_SIZE = 0.2;// レイキャスティングのステップサイズ
     static constexpr double VISIBILITY_RADIUS = 0.05;// 視認性チェック用の半径
     static constexpr double MIN_ELEVATION = -80.0 * M_PI / 180.0;// 最小仰角
@@ -285,8 +285,8 @@ private:
             }
         }
         
-        RCLCPP_INFO(this->get_logger(), "Generated 3D grid: %d valid cells across %d vertical layers", 
-                   valid_cells, vertical_layers_);
+        // RCLCPP_INFO(this->get_logger(), "Generated 3D grid: %d valid cells across %d vertical layers", 
+        //            valid_cells, vertical_layers_);
         publishGridVisualization();
     }
     
@@ -367,21 +367,21 @@ private:
         updateParameters();
         
         // デバッグ情報
-        RCLCPP_INFO(this->get_logger(), "=== Optimization Debug Info ===");
-        RCLCPP_INFO(this->get_logger(), "Excavation grid cells: %zu", excavation_grid_3d_.size());
-        RCLCPP_INFO(this->get_logger(), "Terrain cloud points: %zu", terrain_cloud_ ? terrain_cloud_->size() : 0);
-        RCLCPP_INFO(this->get_logger(), "ZX120 cloud points: %zu", zx120_cloud_ ? zx120_cloud_->size() : 0);
-        RCLCPP_INFO(this->get_logger(), "ZX120 position: (%.2f, %.2f, %.2f)", 
-                   zx120_lidar_position_.x, zx120_lidar_position_.y, zx120_lidar_position_.z);
+        // RCLCPP_INFO(this->get_logger(), "=== Optimization Debug Info ===");
+        // RCLCPP_INFO(this->get_logger(), "Excavation grid cells: %zu", excavation_grid_3d_.size());
+        // RCLCPP_INFO(this->get_logger(), "Terrain cloud points: %zu", terrain_cloud_ ? terrain_cloud_->size() : 0);
+        // RCLCPP_INFO(this->get_logger(), "ZX120 cloud points: %zu", zx120_cloud_ ? zx120_cloud_->size() : 0);
+        // RCLCPP_INFO(this->get_logger(), "ZX120 position: (%.2f, %.2f, %.2f)", 
+        //            zx120_lidar_position_.x, zx120_lidar_position_.y, zx120_lidar_position_.z);
         
         auto candidates = generateCandidatePositions();//センサの候補位置を生成
-        RCLCPP_INFO(this->get_logger(), "Generated %zu candidate positions", candidates.size());
+        // RCLCPP_INFO(this->get_logger(), "Generated %zu candidate positions", candidates.size());
         
         // 最初の候補位置でテスト
         if (!candidates.empty()) {
             const auto& test_pos = candidates[0];
-            RCLCPP_INFO(this->get_logger(), "Testing first candidate: (%.2f, %.2f, %.2f)", 
-                       test_pos.x, test_pos.y, test_pos.z);
+            // RCLCPP_INFO(this->get_logger(), "Testing first candidate: (%.2f, %.2f, %.2f)", 
+            //            test_pos.x, test_pos.y, test_pos.z);
             
             // 最初のセルでテスト
             if (!excavation_grid_3d_.empty()) {
@@ -391,15 +391,15 @@ private:
                 double dz = test_cell.z - test_pos.z;
                 double L = sqrt(dx*dx + dy*dy + dz*dz);
                 
-                RCLCPP_INFO(this->get_logger(), "Test cell at (%.2f, %.2f, %.2f), distance: %.2f", 
-                           test_cell.x, test_cell.y, test_cell.z, L);
+                // RCLCPP_INFO(this->get_logger(), "Test cell at (%.2f, %.2f, %.2f), distance: %.2f", 
+                //            test_cell.x, test_cell.y, test_cell.z, L);
                 
                 bool in_range = (L >= MIN_DISTANCE && L <= max_distance_);// 距離制約チェック
                 bool in_fov = isInFieldOfView(test_pos, test_cell, dx, dy, dz, L);//
                 bool visible = checkVisibility(test_pos, test_cell, false);
                 
-                RCLCPP_INFO(this->get_logger(), "Mobile test: in_range=%d, in_fov=%d, visible=%d", 
-                           in_range, in_fov, visible);
+                // RCLCPP_INFO(this->get_logger(), "Mobile test: in_range=%d, in_fov=%d, visible=%d", 
+                //            in_range, in_fov, visible);
             }
         }
         
@@ -434,13 +434,13 @@ private:
         int total = excavation_grid_3d_.size();
         int covered = zx120_only + mobile_only + both;
         
-        RCLCPP_INFO(this->get_logger(), 
-                   "Best position: (%.2f, %.2f, %.2f) score: %.2f", 
-                   best_mobile_position_.x, best_mobile_position_.y, 
-                   best_mobile_position_.z, best_score);
-        RCLCPP_INFO(this->get_logger(),
-                   "Coverage: %d/%d (%.1f%%) | ZX120 only: %d, Mobile only: %d, Both: %d, Neither: %d",
-                   covered, total, 100.0 * covered / total, zx120_only, mobile_only, both, neither);
+        // RCLCPP_INFO(this->get_logger(), 
+        //            "Best position: (%.2f, %.2f, %.2f) score: %.2f", 
+        //            best_mobile_position_.x, best_mobile_position_.y, 
+        //            best_mobile_position_.z, best_score);
+        // RCLCPP_INFO(this->get_logger(),
+        //            "Coverage: %d/%d (%.1f%%) | ZX120 only: %d, Mobile only: %d, Both: %d, Neither: %d",
+        //            covered, total, 100.0 * covered / total, zx120_only, mobile_only, both, neither);
         
         publishOptimalPosition();
         publishCandidatePositions();
@@ -539,6 +539,7 @@ private:
             cell.score_zx120 = evaluateCellScore(zx120_lidar_position_, cell, true);
             cell.score_mobile = evaluateCellScore(mobile_pos, cell, false);
             cell.combined_score = std::max(cell.score_zx120, cell.score_mobile);
+            // std::cout << "CELL.COMBINED_SCORE = " << cell.combined_score << std::endl;
             
             if (cell.combined_score > 0) {
                 covered_cells++;
@@ -617,31 +618,49 @@ private:
                            beam_z * cell.surface_normal.normal_z;
         
         double theta = acos(std::max(0.0, std::min(1.0, std::abs(dot_product))));
+
+        // double score = ALPHA * cos(M_PI/2 - theta) + BETA * (1.0 / L);
+
         
-        double score = ALPHA * (M_PI/2 - theta) + BETA * (1.0 / L);
+        double score = 0.0;
         
+        if(theta >= 2 * M_PI / 3){// 120度以上の場合はスコア最大
+            score = ALPHA * M_PI/2 + BETA * (1.0 / L);
+            // std::cout << "theta (rad) = " << theta << ", theta (deg) = " << theta * 180.0 / M_PI << std::endl;
+
+            // std::cout << "score =" << score << ", a*θ=" << ALPHA * (M_PI/2 - theta)
+            //         << ", β*(1.0/L)=" << BETA * (1.0 / L) << std::endl;
+        }
+        else if(theta < 2 * M_PI / 3){// 120度未満の場合はスコアを線形に減少
+            score = ALPHA * (M_PI/2 - theta) + BETA * (1.0 / L);
+            // std::cout << "theta (rad) = " << theta << ", theta (deg) = " << theta * 180.0 / M_PI << std::endl;
+
+
+            // std::cout << "score =" << score << ", a*θ=" << ALPHA * (M_PI/2 - theta)
+            //         << ", β*(1.0/L)=" << BETA * (1.0 / L) << std::endl;
+        }
         return std::max(0.0, score);
     }
     
     //グリッドがLiDARの視野内にあるかどうかを判定する
     bool isInFieldOfView(const LidarPosition& lidar_pos, const GridCell& cell, 
-                        double dx, double dy, double dz, double distance) {
-        // 360度対応のため、常にFOV内と判定
-        // 実際のLiDARの仕様に応じて調整可能
-        return true;
-        
-        /* 元のFOVチェックコード（必要に応じて有効化）
+        double dx, double dy, double dz, double distance) {
+        // 視野角制限を有効化
         double azimuth = atan2(dy, dx);
         double elevation = atan2(dz, sqrt(dx*dx + dy*dy));
-        
+
         double azimuth_diff = fmod(azimuth - lidar_pos.yaw + M_PI, 2*M_PI) - M_PI;
         double elevation_diff = elevation - lidar_pos.pitch;
-        
-        return (std::abs(azimuth_diff) <= FOV_HORIZONTAL / 2.0) &&
-               (std::abs(elevation_diff) <= FOV_VERTICAL / 2.0);
-        */
+
+        // 水平視野角: ±90度 (合計180度)
+        const double FOV_HORIZONTAL_LOCAL = 180.0 * M_PI / 180.0;  // ±90度
+        // 垂直視野角: ±45度 (合計90度)
+        const double FOV_VERTICAL_LOCAL = 90.0 * M_PI / 180.0;     // ±45度
+
+        return (std::abs(azimuth_diff) <= FOV_HORIZONTAL_LOCAL / 2.0) &&
+        (std::abs(elevation_diff) <= FOV_VERTICAL_LOCAL / 2.0);
     }
-    
+        
     //LiDARからグリッドセルへの視線が遮蔽されていないかをチェックする
     bool checkVisibility(const LidarPosition& lidar_pos, const GridCell& cell, bool is_zx120) {
         // ZX120の場合は実際の点群を使用
@@ -872,40 +891,65 @@ private:
             marker.scale.x = grid_resolution_ * 0.6;
             marker.scale.y = grid_resolution_ * 0.6;
             marker.scale.z = grid_resolution_ * 0.6;
-            
+            std::cout << "cell.combined_score: " << cell.combined_score << std::endl;   
             // 詳細な観測状態による色分け
-            if (cell.combined_score > 0) {
-                // 観測可能（緑）
+            // if (cell.combined_score > 0) {//cell.combined_scoreはつねに0になる
+            //     // 観測可能（緑）
+            //     marker.color.r = 0.0;
+            //     marker.color.g = 1.0;
+            //     marker.color.b = 0.0;
+            //     marker.color.a = 0.7;
+            // } else if (!cell.in_range_zx120 && !cell.in_range_mobile) {
+            //     // 距離範囲外（紫）
+            //     marker.color.r = 0.5;
+            //     marker.color.g = 0.0;
+            //     marker.color.b = 0.5;
+            //     marker.color.a = 0.5;
+            // } else if (!cell.in_fov_zx120 && !cell.in_fov_mobile) {
+            //     // FOV外（オレンジ）
+            //     marker.color.r = 1.0;
+            //     marker.color.g = 0.5;
+            //     marker.color.b = 0.0;
+            //     marker.color.a = 0.5;
+            // } else if (!cell.visible_from_zx120 && !cell.visible_from_mobile) {
+            //     // オクルージョン（赤）
+            //     marker.color.r = 1.0;
+            //     marker.color.g = 0.0;
+            //     marker.color.b = 0.0;
+            //     marker.color.a = 0.5;
+            // } else {
+            //     // その他の理由で観測不可（黄色）
+            //     marker.color.r = 1.0;
+            //     marker.color.g = 1.0;
+            //     marker.color.b = 0.0;
+            //     marker.color.a = 0.5;
+            // }
+
+            if (!cell.in_range_zx120 && !cell.in_range_mobile) {
+                // 距離範囲外（青）
                 marker.color.r = 0.0;
-                marker.color.g = 1.0;
-                marker.color.b = 0.0;
-                marker.color.a = 0.7;
-            } else if (!cell.in_range_zx120 && !cell.in_range_mobile) {
-                // 距離範囲外（紫）
-                marker.color.r = 0.5;
                 marker.color.g = 0.0;
-                marker.color.b = 0.5;
+                marker.color.b = 1.0;
                 marker.color.a = 0.5;
             } else if (!cell.in_fov_zx120 && !cell.in_fov_mobile) {
-                // FOV外（オレンジ）
+                // FOV外（黄色）
                 marker.color.r = 1.0;
-                marker.color.g = 0.5;
+                marker.color.g = 1.0;
                 marker.color.b = 0.0;
                 marker.color.a = 0.5;
             } else if (!cell.visible_from_zx120 && !cell.visible_from_mobile) {
-                // オクルージョン（黄色）
+                // オクルージョン（赤）
                 marker.color.r = 1.0;
                 marker.color.g = 0.0;
                 marker.color.b = 0.0;
                 marker.color.a = 0.5;
             } else {
-                // その他の理由で観測不可（赤）
-                marker.color.r = 1.0;
+                // 距離範囲内・FOV内・観測可能（緑）
+                marker.color.r = 0.0;
                 marker.color.g = 1.0;
                 marker.color.b = 0.0;
                 marker.color.a = 0.5;
             }
-            
             marker.lifetime = rclcpp::Duration::from_seconds(15.0);
             marker_array.markers.push_back(marker);
         }
