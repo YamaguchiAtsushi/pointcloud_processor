@@ -3,29 +3,29 @@
   <!-- Simple launch file without problematic constructs -->
   
   <!-- Launch calc_heading node -->
-  <node pkg="pointcloud_processor" exec="calc_heading" name="calc_heading" output="screen">
+  <node pkg="pointcloud_processor" exec="calc_heading" name="calc_heading">
     <param name="use_sim_time" value="false"/>
   </node>
 
   <!-- Launch pointcloud_filter node -->
-  <node pkg="pointcloud_processor" exec="pointcloud_filter" name="pointcloud_filter" output="screen">
+  <node pkg="pointcloud_processor" exec="pointcloud_filter" name="pointcloud_filter">
     <param name="use_sim_time" value="false"/>
   </node>
 
   <!-- Launch pointcloud_merger node -->
-  <node pkg="pointcloud_processor" exec="pointcloud_merger" name="pointcloud_merger" output="screen">
+  <node pkg="pointcloud_processor" exec="pointcloud_merger" name="pointcloud_merger">
     <param name="use_sim_time" value="false"/>
   </node>
 
-  <node pkg="pointcloud_processor" exec="excavated_surface_generator" name="excavated_surface_generator" output="screen">
+  <node pkg="pointcloud_processor" exec="excavated_surface_generator" name="excavated_surface_generator">
     <param name="use_sim_time" value="false"/>
   </node>
 
-  <node pkg="pointcloud_processor" exec="virtual_lidar" name="virtual_lidar" output="screen">
+  <!-- <node pkg="pointcloud_processor" exec="virtual_lidar" name="virtual_lidar" output="screen">
     <param name="use_sim_time" value="false"/>
-  </node>
+  </node> -->
 
-  <node pkg="pointcloud_processor" exec="calc_drivable_area" name="calc_drivable_area" output="screen">
+  <node pkg="pointcloud_processor" exec="calc_drivable_area" name="calc_drivable_area">
     <param name="use_sim_time" value="false"/>
   </node>
 
@@ -34,7 +34,7 @@
   <include file="$(find-pkg-share pointcloud_processor)/launch/tf_four_wheel_robot.launch.xml"/>
 
   <!-- Launch rviz2 -->
-  <node pkg="rviz2" exec="rviz2" name="rviz2" output="screen">
+  <node pkg="rviz2" exec="rviz2" name="rviz2">
     <param name="use_sim_time" value="false"/>
   </node>
 </launch>

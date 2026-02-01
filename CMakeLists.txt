@@ -79,6 +79,22 @@ ament_target_dependencies(virtual_lidar
   tf2_eigen
 )
 
+# add_executable(virtual_lidar_unity src/virtual_lidar_unity.cpp)
+# ament_target_dependencies(virtual_lidar_unity
+#   rclcpp
+#   visualization_msgs
+#   geometry_msgs
+#   std_msgs
+#   sensor_msgs
+#   nav_msgs
+#   pcl_conversions
+#   pcl_ros
+#   tf2
+#   tf2_ros
+#   tf2_geometry_msgs
+#   tf2_sensor_msgs
+#   tf2_eigen
+# )
 
 add_executable(excavated_surface_generator src/excavated_surface_generator.cpp)
 ament_target_dependencies(excavated_surface_generator
@@ -169,6 +185,7 @@ target_link_libraries(calc_heading
 install(TARGETS
   calc_drivable_area
   virtual_lidar
+  # virtual_lidar_unity
   excavated_surface_generator
   pointcloud_merger
   pointcloud_filter

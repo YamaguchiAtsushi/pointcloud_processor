@@ -27,10 +27,8 @@ public:
         // 基本パラメータ
         this->declare_parameter("excavation.depth", 1.0);
         this->declare_parameter("excavation.slope_angle", 75.0);
-        // this->declare_parameter("excavation.offset_x", 5.0);
-        // this->declare_parameter("excavation.offset_y", 0.0);
-        this->declare_parameter("excavation.offset_x", 4.0);
-        this->declare_parameter("excavation.offset_y", 1.0);
+        this->declare_parameter("excavation.offset_x", 5.0);
+        this->declare_parameter("excavation.offset_y", 0.0);
         this->declare_parameter("excavation.point_density", 0.05);
         this->declare_parameter("excavation.enabled", true);
         this->declare_parameter("excavation.terrain_search_radius", 0.5);
@@ -370,8 +368,6 @@ private:
         int n_x = static_cast<int>((overall_max_x - overall_min_x) / point_density_) + 1;
         int n_y = static_cast<int>((overall_max_y - overall_min_y) / point_density_) + 1;
         int n_depth = static_cast<int>(depth_ / point_density_);
-
-
         
         for (int i = 0; i <= n_x; ++i) {
             for (int j = 0; j <= n_y; ++j) {
@@ -396,60 +392,20 @@ private:
                 bottom_point.r = 255; bottom_point.g = 255; bottom_point.b = 0;
                 cloud->push_back(bottom_point);
                 
-
                 // 外壁エッジの場合のみ斜面を生成
                 if (isOuterEdge(x_local, y_local, boxes, point_density_)) {
                     for (int k = 1; k < n_depth; ++k) {
                         double z_ratio = static_cast<double>(k) / n_depth;
-                        double offset = slope_offset * z_ratio;  // オフセット計算を追加
-                        
-                        // 外側方向を計算
-                        double offset_x = 0.0, offset_y = 0.0;
-                        
-                        if (!isInsideAnyBox(x_local + point_density_, y_local, boxes)) {
-                            offset_x = offset;
-                        } else if (!isInsideAnyBox(x_local - point_density_, y_local, boxes)) {
-                            offset_x = -offset;
-                        }
-                        
-                        if (!isInsideAnyBox(x_local, y_local + point_density_, boxes)) {
-                            offset_y = offset;
-                        } else if (!isInsideAnyBox(x_local, y_local - point_density_, boxes)) {
-                            offset_y = -offset;
-                        }
-                        
-                        double x_slope = x_local + offset_x;
-                        double y_slope = y_local + offset_y;
-                        
-                        double x_global_slope = center.x() + x_slope * cos(yaw) - y_slope * sin(yaw);
-                        double y_global_slope = center.y() + x_slope * sin(yaw) + y_slope * cos(yaw);
                         double z_local = local_terrain_height - depth_ + k * point_density_;
                         
                         pcl::PointXYZRGB slope_point;
-                        slope_point.x = x_global_slope;  // 修正: オフセット適用後の座標
-                        slope_point.y = y_global_slope;  // 修正: オフセット適用後の座標
+                        slope_point.x = x_global;
+                        slope_point.y = y_global;
                         slope_point.z = z_local;
                         slope_point.r = 200; slope_point.g = 200; slope_point.b = 0;
                         cloud->push_back(slope_point);
                     }
                 }
-
-
-
-                // // 外壁エッジの場合のみ斜面を生成
-                // if (isOuterEdge(x_local, y_local, boxes, point_density_)) {
-                //     for (int k = 1; k < n_depth; ++k) {
-                //         double z_ratio = static_cast<double>(k) / n_depth;
-                //         double z_local = local_terrain_height - depth_ + k * point_density_;
-                        
-                //         pcl::PointXYZRGB slope_point;
-                //         slope_point.x = x_global;
-                //         slope_point.y = y_global;
-                //         slope_point.z = z_local;
-                //         slope_point.r = 200; slope_point.g = 200; slope_point.b = 0;
-                //         cloud->push_back(slope_point);
-                //     }
-                // }
             }
         }
     }

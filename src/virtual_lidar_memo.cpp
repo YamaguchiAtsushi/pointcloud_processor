@@ -99,7 +99,7 @@ public:
 private:
     static constexpr double ALPHA = 1.0;
     static constexpr double BETA = 1.0;
-    static constexpr double MIN_DISTANCE = 0.5;  // 1.0 -> 0.5に緩和
+    static constexpr double MIN_DISTANCE = 1.0;
     static constexpr double ZX120_OFFSET_X = 0.4;
     static constexpr double ZX120_OFFSET_Y = 0.5;
     static constexpr double ZX120_OFFSET_Z = 3.5;
@@ -108,9 +108,9 @@ private:
     static constexpr double FOV_HORIZONTAL = 360.0 * M_PI / 180.0;
     static constexpr double FOV_VERTICAL = 180.0 * M_PI / 180.0;
     static constexpr double NORMAL_SEARCH_RADIUS = 1.5;
-    static constexpr double RAY_STEP_SIZE = 0.3;  // 0.2 -> 0.3に変更（高速化）
-    static constexpr double VISIBILITY_RADIUS = 0.08;  // 0.05 -> 0.1に緩和
-    static constexpr double MIN_ELEVATION = -85.0 * M_PI / 180.0;  // -80 -> -85に拡張
+    static constexpr double RAY_STEP_SIZE = 0.2;
+    static constexpr double VISIBILITY_RADIUS = 0.05;
+    static constexpr double MIN_ELEVATION = -80.0 * M_PI / 180.0;
     static constexpr double MAX_ELEVATION = 85.0 * M_PI / 180.0;
     
     double grid_resolution_;
@@ -199,7 +199,6 @@ private:
             zx120_kdtree_.reset(new pcl::KdTreeFLANN<pcl::PointXYZRGB>);
             try {
                 zx120_kdtree_->setInputCloud(zx120_cloud_);
-                RCLCPP_INFO(this->get_logger(), "ZX120 point cloud updated: %zu points", zx120_cloud_->size());
             } catch (const std::exception& e) {
                 RCLCPP_ERROR(this->get_logger(), "Failed to build ZX120 KD-tree: %s", e.what());
             }
@@ -365,9 +364,6 @@ private:
         int blue_cells_zx120 = 0;
         int yellow_cells_zx120 = 0;
         
-        // デバッグ用カウンタ
-        int range_ok = 0, fov_ok = 0, visibility_ok = 0;
-        
         for (auto& cell : excavation_grid_3d_) {
             if (!cell.is_valid) continue;
             
@@ -375,11 +371,6 @@ private:
             
             // ZX120からのスコア評価
             cell.score_zx120 = evaluateCellScore(zx120_lidar_position_, cell, true);
-            
-            // デバッグカウント
-            if (cell.in_range_zx120) range_ok++;
-            if (cell.in_fov_zx120) fov_ok++;
-            if (cell.visible_from_zx120) visibility_ok++;
             
             if (cell.score_zx120 > 0) {
                 total_score_zx120 += cell.score_zx120;
@@ -422,16 +413,6 @@ private:
         RCLCPP_INFO(this->get_logger(), "ZX120 Position: (%.2f, %.2f, %.2f)", 
                    zx120_lidar_position_.x, zx120_lidar_position_.y, zx120_lidar_position_.z);
         RCLCPP_INFO(this->get_logger(), "Total Score (ZX120 only): %.2f", total_score_zx120);
-        RCLCPP_INFO(this->get_logger(), "----------------------------------------");
-        RCLCPP_INFO(this->get_logger(), "Debug Info:");
-        RCLCPP_INFO(this->get_logger(), "  Cells in range: %d (%.1f%%)", range_ok, 
-                   total_cells > 0 ? range_ok * 100.0 / total_cells : 0.0);
-        RCLCPP_INFO(this->get_logger(), "  Cells in FOV: %d (%.1f%%)", fov_ok,
-                   total_cells > 0 ? fov_ok * 100.0 / total_cells : 0.0);
-        RCLCPP_INFO(this->get_logger(), "  Cells visible: %d (%.1f%%)", visibility_ok,
-                   total_cells > 0 ? visibility_ok * 100.0 / total_cells : 0.0);
-        RCLCPP_INFO(this->get_logger(), "  ZX120 point cloud size: %zu", 
-                   zx120_cloud_ ? zx120_cloud_->size() : 0);
         RCLCPP_INFO(this->get_logger(), "----------------------------------------");
         RCLCPP_INFO(this->get_logger(), "Color-based Area Analysis (ZX120 only):");
         RCLCPP_INFO(this->get_logger(), "  Total cells: %d", total_cells);
@@ -479,10 +460,10 @@ private:
         
         // ========== 色別エリア統計（デュアル構成） ==========
         int total_cells = 0;
-        int green_cells = 0;
-        int red_cells = 0;
-        int blue_cells = 0;
-        int yellow_cells = 0;
+        int green_cells = 0;   // 観測可能（緑）
+        int red_cells = 0;     // オクルージョン（赤）
+        int blue_cells = 0;    // 距離範囲外（青）
+        int yellow_cells = 0;  // FOV外（黄）
         
         for (const auto& cell : excavation_grid_3d_) {
             if (!cell.is_valid) continue;
@@ -702,35 +683,33 @@ private:
     
     bool isInFieldOfView(const LidarPosition& lidar_pos, const GridCell& cell, 
         double dx, double dy, double dz, double distance) {
-        
-        // ZX120は全方位360度なので、水平FOVチェックは不要
+        double azimuth = atan2(dy, dx);
         double elevation = atan2(dz, sqrt(dx*dx + dy*dy));
+
+        double azimuth_diff = fmod(azimuth - lidar_pos.yaw + M_PI, 2*M_PI) - M_PI;
         double elevation_diff = elevation - lidar_pos.pitch;
-        
-        // 垂直FOV: ±90度（180度全体）
-        const double FOV_VERTICAL_LOCAL = 180.0 * M_PI / 180.0;
-        
-        return (std::abs(elevation_diff) <= FOV_VERTICAL_LOCAL / 2.0);
+
+        const double FOV_HORIZONTAL_LOCAL = 180.0 * M_PI / 180.0;
+        const double FOV_VERTICAL_LOCAL = 90.0 * M_PI / 180.0;
+
+        return (std::abs(azimuth_diff) <= FOV_HORIZONTAL_LOCAL / 2.0) &&
+               (std::abs(elevation_diff) <= FOV_VERTICAL_LOCAL / 2.0);
     }
         
     bool checkVisibility(const LidarPosition& lidar_pos, const GridCell& cell, bool is_zx120) {
         if (is_zx120) {
-            // ZX120の可視性チェック: 点群データとの照合を緩和
             if (!zx120_kdtree_ || !zx120_cloud_ || zx120_cloud_->empty()) {
-                // 点群データがない場合は可視とみなす（レイキャスティングのみ）
-                if (!terrain_kdtree_) return true;
-                return checkVisibilityWithRaycasting(lidar_pos, cell, terrain_kdtree_);
+                return false;
             }
-            // 点群データがある場合は、より緩い条件で可視性をチェック
-            return checkVisibilityWithPointCloudRelaxed(lidar_pos, cell, zx120_kdtree_);
+            return checkVisibilityWithPointCloud(lidar_pos, cell, zx120_kdtree_);
         } else {
             if (!terrain_kdtree_) return true;
             return checkVisibilityWithRaycasting(lidar_pos, cell, terrain_kdtree_);
         }
     }
     
-    bool checkVisibilityWithPointCloudRelaxed(const LidarPosition& lidar_pos, const GridCell& cell,
-                                              pcl::KdTreeFLANN<pcl::PointXYZRGB>::Ptr kdtree) {
+    bool checkVisibilityWithPointCloud(const LidarPosition& lidar_pos, const GridCell& cell,
+                                       pcl::KdTreeFLANN<pcl::PointXYZRGB>::Ptr kdtree) {
         pcl::PointXYZRGB search_point;
         search_point.x = cell.x;
         search_point.y = cell.y;
@@ -739,16 +718,11 @@ private:
         std::vector<int> point_indices;
         std::vector<float> point_distances;
         
-        // 検索半径を大きくして、より広い範囲で点を探す
-        double search_radius = VISIBILITY_RADIUS * 3.0;  // 3倍に拡大
-        
-        if (kdtree->radiusSearch(search_point, search_radius, point_indices, point_distances) > 0) {
+        if (kdtree->radiusSearch(search_point, VISIBILITY_RADIUS, point_indices, point_distances) > 0) {
             return true;
         }
         
-        // 点が見つからない場合もレイキャスティングで再確認
-        if (!terrain_kdtree_) return true;
-        return checkVisibilityWithRaycasting(lidar_pos, cell, terrain_kdtree_);
+        return false;
     }
     
     bool checkVisibilityWithRaycasting(const LidarPosition& lidar_pos, const GridCell& cell,
